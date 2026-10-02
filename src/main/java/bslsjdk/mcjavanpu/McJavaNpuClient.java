@@ -12,12 +12,12 @@ public final class McJavaNpuClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         KeyMapping.Category category = KeyMapping.Category.register(
-                net.minecraft.resources.ResourceLocation.fromNamespaceAndPath("mcjavanpu", "npu")
+                net.minecraft.resources.Identifier.fromNamespaceAndPath("mcjavanpu", "npu")
         );
 
         openScreenKey = KeyMappingHelper.registerKeyMapping(new KeyMapping(
                 "key.mcjavanpu.open",
-                InputConstants.Type.KEYSYM,
+                InputConstants.Type.KEYBOARD,
                 InputConstants.UNKNOWN.getValue(),
                 category
         ));
