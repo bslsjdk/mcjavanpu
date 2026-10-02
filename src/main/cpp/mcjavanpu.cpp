@@ -188,6 +188,14 @@ bool loadRuntime() {
         libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
     setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
+    // npu_probe explicitly chdir()s into its private work directory before
+    // loading QNN. Reproduce that behavior instead of inheriting ZL2/FCL CWD.
+    if (chdir(libDir.c_str()) != 0) {
+        error("CHDIR_WORKDIR_FAIL errno=" + std::to_string(errno) + " path=" + libDir);
+        return false;
+    }
+    char cwdAfter[1024]{};
+    if (getcwd(cwdAfter, sizeof(cwdAfter))) info(std::string("CWD_AFTER=") + cwdAfter);
     info("ADSP_LIBRARY_PATH=" + adsp);
     info("LD_LIBRARY_PATH=" + ldPath);
 
@@ -242,7 +250,7 @@ bool initQnn() {
     stage("INIT_BEGIN");
     info("PID=" + std::to_string((long long)getpid()));
     char cwd[1024]{};
-    if (getcwd(cwd, sizeof(cwd))) info(std::string("CWD=") + cwd);
+    if (getcwd(cwd, sizeof(cwd))) info(std::string("CWD_BEFORE=") + cwd);
     else error(std::string("GETCWD_FAIL errno=") + std::to_string(errno));
 
     if (!loadRuntime()) return false;
@@ -289,7 +297,7 @@ bool initQnn() {
 
     stage("BACKEND_CREATE_BEGIN");
     if (ftbl.logCreate) {
-        const int requestedLogLevel = envInt("MCJAVANPU_QNN_LOG_LEVEL", (int)QNN_LOG_LEVEL_DEBUG);
+        const int requestedLogLevel = gConfiguredLogLevel;
         const QnnLog_Level_t qnnLevel =
             requestedLogLevel <= (int)QNN_LOG_LEVEL_ERROR ? QNN_LOG_LEVEL_ERROR :
             requestedLogLevel == (int)QNN_LOG_LEVEL_WARN ? QNN_LOG_LEVEL_WARN :
@@ -298,7 +306,7 @@ bool initQnn() {
             requestedLogLevel == (int)QNN_LOG_LEVEL_DEBUG ? QNN_LOG_LEVEL_DEBUG :
             QNN_LOG_LEVEL_DEBUG;
         rc = ftbl.logCreate(qnnLogCallback, qnnLevel, &g.logger);
-        info("LOG_CREATE rc=" + std::to_string((int)rc) + " level=DEBUG callback=enabled");
+        info("LOG_CREATE rc=" + std::to_string((int)rc) + " level=" + std::to_string(requestedLogLevel) + " callback=enabled");
         if (rc != QNN_SUCCESS) g.logger = nullptr;
     }
 
@@ -307,7 +315,7 @@ bool initQnn() {
     info("BACKEND_CREATE_OK");
 
     stage("DEVICE_CREATE_BEGIN");
-    const int retries = envInt("MCJAVANPU_DEVICE_RETRIES", 0);
+    const int retries = gConfiguredDeviceRetries;
     for (int attempt = 0; attempt <= retries; ++attempt) {
         info("DEVICE_CREATE_ATTEMPT=" + std::to_string(attempt + 1) +
              "/" + std::to_string(retries + 1));
