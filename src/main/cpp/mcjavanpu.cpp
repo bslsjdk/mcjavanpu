@@ -115,10 +115,13 @@ bool loadRuntime() {
     info("QNN_LIB_DIR=" + libDir);
 
     // Same environment strategy as the proven npu_probe runner.
+    // FastRPC/HTP uses colon-separated search paths.  The V73 Skel is a
+    // DSP-side image: it must be discoverable through ADSP_LIBRARY_PATH, not
+    // dlopen'ed into the ARM64 host process.
     const std::string adsp =
-        libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
+        libDir + ":/vendor/dsp/cdsp:/vendor/lib/rfsa/adsp:/system/lib/rfsa/adsp:/dsp";
     const std::string ldPath =
-        libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
+        libDir + ":/vendor/lib64:/vendor/dsp/cdsp";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
     setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
     info("ADSP_LIBRARY_PATH=" + adsp);
@@ -130,9 +133,8 @@ bool loadRuntime() {
     const char* deps[] = {
         "libc++_shared.so",
         "libQnnSystem.so",
-        "libQnnHtpV73Stub.so",
-        "libQnnHtpV73.so",
-        "libQnnHtpPrepare.so"
+        "libQnnHtpPrepare.so",
+        "libQnnHtpV73Stub.so"
     };
 
     for (const char* name : deps) {
@@ -147,6 +149,17 @@ bool loadRuntime() {
             error(std::string("QNN_DEP_FAIL name=") + name +
                   " error=" + (err ? err : "?"));
         }
+    }
+
+    const std::string skelPath = libDir + "/libQnnHtpV73Skel.so";
+    {
+        std::ifstream skel(skelPath);
+        if (!skel.good()) {
+            error("HTP_V73_SKEL_MISSING path=" + skelPath);
+            g.error = "libQnnHtpV73Skel.so missing from runtime directory";
+            return false;
+        }
+        info("HTP_V73_SKEL_PRESENT path=" + skelPath);
     }
 
     const std::string htpPath = libDir + "/libQnnHtp.so";
@@ -214,19 +227,22 @@ bool initQnn() {
     for (uint32_t i = 0; i < count; ++i) {
         if (providers[i]) {
             info("PROVIDER[" + std::to_string(i) + "] backendId=" +
-                 std::to_string((unsigned)providers[i]->backendId));
+                 std::to_string((unsigned)providers[i]->backendId) +
+                 " name=" + (providers[i]->providerName ? providers[i]->providerName : "null"));
             if (providers[i]->backendId == BACKEND_ID_HTP) {
                 g.iface = providers[i];
             }
         }
     }
 
+    // Never silently fall back to CPU.  A successful test is only meaningful
+    // if the HTP provider was actually selected.
     if (!g.iface) {
-        g.iface = providers[0];
-        info("HTP_PROVIDER_NOT_FOUND using provider[0]");
-    } else {
-        info("HTP_PROVIDER_SELECTED backendId=6");
+        g.error = "HTP provider (backendId=6) not found; refusing CPU fallback";
+        error(g.error);
+        return false;
     }
+    info("HTP_PROVIDER_SELECTED backendId=6");
 
     const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
 
@@ -342,12 +358,13 @@ bool smokeTest() {
     }
     info("GRAPH_ADD_NODE_OK");
 
+    stage("GRAPH_FINALIZE_BEGIN");
     rc = ftbl.graphFinalize(graph, nullptr, nullptr);
     if (rc != QNN_SUCCESS) {
         error("GRAPH_FINALIZE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
-    info("GRAPH_FINALIZE_OK");
+    info("GRAPH_FINALIZE_OK backendId=" + std::to_string((unsigned)g.iface->backendId));
 
     std::vector<float> av(n), bv(n), cv(n, -999.0f);
     for (uint32_t i = 0; i < n; ++i) {
@@ -390,6 +407,9 @@ bool smokeTest() {
     }
 
     stage("SMOKE_SUCCESS");
+    info("HTP_EXECUTE_SUCCESS backendId=" +
+         std::to_string((unsigned)g.iface->backendId) +
+         " elapsed_us=" + std::to_string(us));
     info("OUTPUT_VERIFY_OK");
     return true;
 }
