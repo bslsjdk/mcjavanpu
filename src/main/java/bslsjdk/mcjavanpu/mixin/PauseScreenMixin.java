@@ -18,7 +18,7 @@ public abstract class PauseScreenMixin {
         int y=self.height/4+112;
         ((ScreenAccessor)self).mcjavanpu$addRenderableWidget(
             Button.builder(net.minecraft.network.chat.Component.literal("NPU 设置"), b ->
-                Minecraft.getInstance().setScreen(new NpuScreen()))
+                Minecraft.getInstance().gui.setScreen(new NpuScreen()))
             .bounds(x,y,200,20).build());
     }
 }
