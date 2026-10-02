@@ -6,7 +6,7 @@ public final class NpuRuntime {
     private static volatile boolean available;
     private static volatile String loadError = "service not checked";
     private static volatile String diagnostics = "";
-    private static final String tuning = "transport=tcp;host=127.0.0.1;port=38991;backend=HTP_V73";
+    private static final String tuning = "transport=local-abstract-socket;persistent=true;socket=mcnpu_ipc_v1;backend=HTP_V73";
 
     private NpuRuntime() {}
 
