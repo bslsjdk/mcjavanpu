@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
+#include <stdio.h>
+#include <stddef.h>
 
 static const char *SOCKET_NAME = "mcnpu_ipc_v1";
 
@@ -17,9 +19,7 @@ static jstring make_error(JNIEnv *env, const char *prefix) {
 JNIEXPORT jstring JNICALL
 Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, jstring command) {
     (void)cls;
-    if (command == NULL) {
-        return (*env)->NewStringUTF(env, "ERR NULL_COMMAND");
-    }
+    if (command == NULL) return (*env)->NewStringUTF(env, "ERR NULL_COMMAND");
 
     const char *cmd = (*env)->GetStringUTFChars(env, command, NULL);
     if (cmd == NULL) return (*env)->NewStringUTF(env, "ERR UTF_COMMAND");
@@ -41,7 +41,6 @@ Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, j
         return (*env)->NewStringUTF(env, "ERR SOCKET_NAME_TOO_LONG");
     }
 
-    // Linux abstract UNIX socket: first byte of sun_path is NUL.
     memcpy(addr.sun_path + 1, SOCKET_NAME, name_len);
     socklen_t addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
 
@@ -59,15 +58,15 @@ Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, j
         return (*env)->NewStringUTF(env, "ERR COMMAND_TOO_LONG");
     }
 
-    char *wire = (char *)malloc(cmd_len + 2);
+    char *wire = (char *)malloc(cmd_len + 1);
     if (!wire) {
         close(fd);
         (*env)->ReleaseStringUTFChars(env, command, cmd);
         return (*env)->NewStringUTF(env, "ERR OOM");
     }
+
     memcpy(wire, cmd, cmd_len);
     wire[cmd_len] = '\n';
-    wire[cmd_len + 1] = '\0';
 
     size_t sent = 0;
     while (sent < cmd_len + 1) {
@@ -91,6 +90,7 @@ Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, j
         used += (size_t)n;
         if (memchr(reply, '\n', used) != NULL) break;
     }
+
     reply[used] = '\0';
     close(fd);
     (*env)->ReleaseStringUTFChars(env, command, cmd);
