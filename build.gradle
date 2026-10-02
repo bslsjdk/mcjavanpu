@@ -11,12 +11,9 @@ base {
 }
 
 dependencies {
-    def androidHome = System.getenv("ANDROID_HOME")
-    if (!androidHome) throw new GradleException("ANDROID_HOME is required to compile Android LocalSocket APIs")
-    compileOnly files("${androidHome}/platforms/android-35/android.jar")
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    implementation "net.fabricmc:fabric-api:${project.fabric_api_version}"
 }
 
 processResources {
@@ -35,5 +32,3 @@ java {
     sourceCompatibility = JavaVersion.VERSION_25
     targetCompatibility = JavaVersion.VERSION_25
 }
-
-
