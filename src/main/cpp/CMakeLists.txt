@@ -14,5 +14,10 @@ find_library(log-lib log)
 target_link_libraries(mcjavanpu ${log-lib} dl)
 
 target_compile_features(mcjavanpu PRIVATE cxx_std_17)
-target_compile_options(mcjavanpu PRIVATE -fvisibility=hidden -ffunction-sections -fdata-sections)
+target_compile_options(mcjavanpu PRIVATE
+        -fvisibility=hidden
+        -ffunction-sections
+        -fdata-sections
+        -Wall
+        -Wextra)
 target_link_options(mcjavanpu PRIVATE -Wl,--gc-sections)
