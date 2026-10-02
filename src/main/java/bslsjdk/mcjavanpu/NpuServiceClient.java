@@ -75,7 +75,13 @@ public final class NpuServiceClient {
             } catch (IOException second) {
                 close();
                 return "ERR SERVICE_UNAVAILABLE " + second.getClass().getSimpleName();
+            } catch (RuntimeException second) {
+                close();
+                return "ERR SERVICE_RUNTIME " + second.getClass().getSimpleName();
             }
+        } catch (RuntimeException first) {
+            close();
+            return "ERR SERVICE_RUNTIME " + first.getClass().getSimpleName();
         }
     }
 
