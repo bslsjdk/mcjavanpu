@@ -33,6 +33,19 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
+tasks.register("quickTestJar", Jar) {
+    group = "build"
+    description = "Builds a standalone executable MCJavaNPU diagnostic JAR."
+    dependsOn tasks.named("classes")
+    archiveBaseName = "mcjavanpu-quicktest"
+    destinationDirectory = layout.buildDirectory.dir("quicktest")
+    from sourceSets.main.output
+    manifest {
+        attributes("Main-Class": "bslsjdk.mcjavanpu.QuickTestMain")
+    }
+    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
+}
+
 publishing {
     publications {
         create("mavenJava", MavenPublication) {
