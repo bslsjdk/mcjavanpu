@@ -42,24 +42,30 @@ public final class NpuScreen extends Screen {
     }
 
     private void refresh() {
-        NpuRuntime.init();
-        boolean available = NpuRuntime.isAvailable();
-        status = available ? "NPU：已连接" : "NPU：未连接";
-        detail = available ? NpuRuntime.getDeviceInfo() : NpuRuntime.getLoadError();
-        detail = detail + "\n\n" + NpuRuntime.getDiagnostics();
-        scroll = 0;
+        new Thread(() -> {
+            String s = NpuServiceClient.status();
+            this.minecraft.execute(() -> {
+                boolean available = s.startsWith("QNN HTP ready");
+                status = available ? "NPU：服务已连接" : "NPU：服务未连接";
+                detail = s;
+                scroll = 0;
+            });
+        }, "mcnpu-status").start();
     }
 
     private void runTest() {
-        NpuRuntime.TestResult result = NpuRuntime.test();
-        status = result.success() ? "NPU 测试：通过" : "NPU 测试：失败";
-        detail = result.detail();
+        new Thread(() -> {
+            String r = NpuServiceClient.smoke();
+            this.minecraft.execute(() -> {
+                boolean ok = r.startsWith("OK ");
+                status = ok ? "NPU 测试：通过" : "NPU 测试：失败";
+                detail = r;
+            });
+        }, "mcnpu-smoke").start();
     }
 
     private void runBenchmark() {
-        NpuRuntime.TestResult result = NpuRuntime.benchmark();
-        status = result.success() ? "性能测试：完成" : "性能测试：失败";
-        detail = result.detail();
+        runTest();
     }
 
     @Override
