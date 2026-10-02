@@ -23,15 +23,16 @@ processResources {
     }
 }
 
-// Zalith 2 / Pojav uses Java 21. Keep class files at version 65.
+// Minecraft 26.3 requires Java 25.
+// Keep the mod and diagnostic JAR on the same runtime as the current game.
 tasks.withType(JavaCompile).configureEach {
-    options.release = 21
+    options.release = 25
 }
 
 java {
     withSourcesJar()
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
+    sourceCompatibility = JavaVersion.VERSION_25
+    targetCompatibility = JavaVersion.VERSION_25
 }
 
 tasks.register("quickTestJar", Jar) {
