@@ -11,7 +11,7 @@ import java.nio.file.StandardCopyOption;
  * Falls back to the bundled library for standalone use.
  */
 public final class NativeLoader {
-    private static final String LIB_NAME = "libmcjavanpu.so";
+    private static final String LIB_NAME = "libmcfclnpu.so";
     private static final String PLUGIN_PATH_PROPERTY = "mcjavanpu.native";
 
     private NativeLoader() {}
