@@ -7,105 +7,30 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <stddef.h>
+#include <pthread.h>
 
-static jstring make_error(JNIEnv *env, const char *prefix) {
+#define IPC_PORT 38761
+#define REPLY_MAX 16384
+
+static int g_fd = -1;
+static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static jstring make_error(JNIEnv *env, const char *prefix, int err) {
     char buf[256];
-    snprintf(buf, sizeof(buf), "ERR %s errno=%d %s", prefix, errno, strerror(errno));
+    snprintf(buf, sizeof(buf), "ERR %s errno=%d %s", prefix, err, strerror(err));
     return (*env)->NewStringUTF(env, buf);
 }
 
-JNIEXPORT jstring JNICALL
-Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, jstring command) {
-    (void)cls;
-    if (command == NULL) return (*env)->NewStringUTF(env, "ERR NULL_COMMAND");
-
-    const char *cmd = (*env)->GetStringUTFChars(env, command, NULL);
-    if (cmd == NULL) return (*env)->NewStringUTF(env, "ERR UTF_COMMAND");
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) {
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return make_error(env, "SOCKET");
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-
-    size_t name_len = strlen(SOCKET_NAME);
-    if (name_len + 1 > sizeof(addr.sun_path)) {
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return (*env)->NewStringUTF(env, "ERR SOCKET_NAME_TOO_LONG");
-    }
-
-    memcpy(addr.sun_path + 1, SOCKET_NAME, name_len);
-    socklen_t addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
-
-    if (connect(fd, (struct sockaddr *)&addr, addr_len) < 0) {
-        jstring result = make_error(env, "CONNECT");
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return result;
-    }
-
-    size_t cmd_len = strlen(cmd);
-    if (cmd_len > 8192) {
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return (*env)->NewStringUTF(env, "ERR COMMAND_TOO_LONG");
-    }
-
-    char *wire = (char *)malloc(cmd_len + 1);
-    if (!wire) {
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return (*env)->NewStringUTF(env, "ERR OOM");
-    }
-
-    memcpy(wire, cmd, cmd_len);
-    wire[cmd_len] = '\n';
-
-    size_t sent = 0;
-    while (sent < cmd_len + 1) {
-        ssize_t n = send(fd, wire + sent, cmd_len + 1 - sent, 0);
-        if (n <= 0) {
-            free(wire);
-            jstring result = make_error(env, "SEND");
-            close(fd);
-            (*env)->ReleaseStringUTFChars(env, command, cmd);
-            return result;
-        }
-        sent += (size_t)n;
-    }
-    free(wire);
-
-    char reply[16384];
-    size_t used = 0;
-    while (used + 1 < sizeof(reply)) {
-        ssize_t n = recv(fd, reply + used, sizeof(reply) - used - 1, 0);
-        if (n <= 0) break;
-        used += (size_t)n;
-        if (memchr(reply, '\n', used) != NULL) break;
-    }
-
-    reply[used] = '\0';
-    close(fd);
-    (*env)->ReleaseStringUTFChars(env, command, cmd);
-
-    char *newline = strchr(reply, '\n');
-    if (newline) *newline = '\0';
-    if (reply[0] == '\0') return (*env)->NewStringUTF(env, "ERR EMPTY_REPLY");
-    return (*env)->NewStringUTF(env, reply);
-}static int connect_socket(void) {
+static int connect_socket(void) {
     int fd = socket(AF_INET, SOCK_STREAM, 0);
     if (fd < 0) return -1;
+    int one = 1;
+    setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, &one, sizeof(one));
 
     struct sockaddr_in addr;
     memset(&addr, 0, sizeof(addr));
     addr.sin_family = AF_INET;
-    addr.sin_port = htons(38761);
+    addr.sin_port = htons(IPC_PORT);
     addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
 
     if (connect(fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
@@ -116,6 +41,56 @@ Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, j
     }
     return fd;
 }
+
+static void close_locked(void) {
+    if (g_fd >= 0) {
+        shutdown(g_fd, SHUT_RDWR);
+        close(g_fd);
+        g_fd = -1;
+    }
+}
+
+static int ensure_connected_locked(void) {
+    if (g_fd >= 0) return 0;
+    g_fd = connect_socket();
+    return g_fd >= 0 ? 0 : -1;
+}
+
+static int send_all(int fd, const char *buf, size_t len) {
+    size_t off = 0;
+    while (off < len) {
+        ssize_t n = send(fd, buf + off, len - off, MSG_NOSIGNAL);
+        if (n > 0) {
+            off += (size_t)n;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    return 0;
+}
+
+static int recv_line(int fd, char *buf, size_t cap) {
+    size_t used = 0;
+    while (used + 1 < cap) {
+        char c;
+        ssize_t n = recv(fd, &c, 1, 0);
+        if (n == 1) {
+            if (c == '\n') {
+                buf[used] = '\0';
+                return 0;
+            }
+            buf[used++] = c;
+            continue;
+        }
+        if (n < 0 && errno == EINTR) continue;
+        return -1;
+    }
+    buf[cap - 1] = '\0';
+    errno = EMSGSIZE;
+    return -1;
+}
+
 JNIEXPORT jstring JNICALL
 Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, jstring command) {
     (void)cls;
@@ -124,79 +99,57 @@ Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeRequest(JNIEnv *env, jclass cls, j
     const char *cmd = (*env)->GetStringUTFChars(env, command, NULL);
     if (cmd == NULL) return (*env)->NewStringUTF(env, "ERR UTF_COMMAND");
 
-    int fd = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (fd < 0) {
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return make_error(env, "SOCKET");
-    }
-
-    struct sockaddr_un addr;
-    memset(&addr, 0, sizeof(addr));
-    addr.sun_family = AF_UNIX;
-
-    size_t name_len = strlen(SOCKET_NAME);
-    if (name_len + 1 > sizeof(addr.sun_path)) {
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return (*env)->NewStringUTF(env, "ERR SOCKET_NAME_TOO_LONG");
-    }
-
-    memcpy(addr.sun_path + 1, SOCKET_NAME, name_len);
-    socklen_t addr_len = (socklen_t)(offsetof(struct sockaddr_un, sun_path) + 1 + name_len);
-
-    if (connect(fd, (struct sockaddr *)&addr, addr_len) < 0) {
-        jstring result = make_error(env, "CONNECT");
-        close(fd);
-        (*env)->ReleaseStringUTFChars(env, command, cmd);
-        return result;
-    }
-
     size_t cmd_len = strlen(cmd);
+    if (cmd_len == 0) {
+        (*env)->ReleaseStringUTFChars(env, command, cmd);
+        return (*env)->NewStringUTF(env, "ERR EMPTY_COMMAND");
+    }
     if (cmd_len > 8192) {
-        close(fd);
         (*env)->ReleaseStringUTFChars(env, command, cmd);
         return (*env)->NewStringUTF(env, "ERR COMMAND_TOO_LONG");
     }
 
     char *wire = (char *)malloc(cmd_len + 1);
     if (!wire) {
-        close(fd);
         (*env)->ReleaseStringUTFChars(env, command, cmd);
         return (*env)->NewStringUTF(env, "ERR OOM");
     }
-
     memcpy(wire, cmd, cmd_len);
     wire[cmd_len] = '\n';
 
-    size_t sent = 0;
-    while (sent < cmd_len + 1) {
-        ssize_t n = send(fd, wire + sent, cmd_len + 1 - sent, 0);
-        if (n <= 0) {
-            free(wire);
-            jstring result = make_error(env, "SEND");
-            close(fd);
-            (*env)->ReleaseStringUTFChars(env, command, cmd);
-            return result;
+    char reply[REPLY_MAX];
+    int last_err = 0;
+
+    pthread_mutex_lock(&g_lock);
+    for (int attempt = 0; attempt < 2; ++attempt) {
+        if (ensure_connected_locked() < 0) {
+            last_err = errno;
+            continue;
         }
-        sent += (size_t)n;
+
+        if (send_all(g_fd, wire, cmd_len + 1) == 0 &&
+            recv_line(g_fd, reply, sizeof(reply)) == 0) {
+            pthread_mutex_unlock(&g_lock);
+            free(wire);
+            (*env)->ReleaseStringUTFChars(env, command, cmd);
+            return (*env)->NewStringUTF(env, reply[0] ? reply : "ERR EMPTY_REPLY");
+        }
+
+        last_err = errno;
+        close_locked();
     }
+    pthread_mutex_unlock(&g_lock);
+
     free(wire);
-
-    char reply[16384];
-    size_t used = 0;
-    while (used + 1 < sizeof(reply)) {
-        ssize_t n = recv(fd, reply + used, sizeof(reply) - used - 1, 0);
-        if (n <= 0) break;
-        used += (size_t)n;
-        if (memchr(reply, '\n', used) != NULL) break;
-    }
-
-    reply[used] = '\0';
-    close(fd);
     (*env)->ReleaseStringUTFChars(env, command, cmd);
+    return make_error(env, "IPC", last_err ? last_err : EIO);
+}
 
-    char *newline = strchr(reply, '\n');
-    if (newline) *newline = '\0';
-    if (reply[0] == '\0') return (*env)->NewStringUTF(env, "ERR EMPTY_REPLY");
-    return (*env)->NewStringUTF(env, reply);
+JNIEXPORT void JNICALL
+Java_bslsjdk_mcjavanpu_NpuServiceClient_nativeClose(JNIEnv *env, jclass cls) {
+    (void)env;
+    (void)cls;
+    pthread_mutex_lock(&g_lock);
+    close_locked();
+    pthread_mutex_unlock(&g_lock);
 }
