@@ -11,7 +11,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(PauseScreen.class)
 public abstract class PauseScreenMixin {
-    @Inject(method="init", at=@At("TAIL"))
+    @Inject(method="init()", at=@At("TAIL"))
     private void mcjavanpu$addButton(CallbackInfo ci) {
         PauseScreen self=(PauseScreen)(Object)this;
         int x=self.width/2-100;
