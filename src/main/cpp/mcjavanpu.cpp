@@ -92,28 +92,95 @@ bool fail(const char* name, Qnn_ErrorHandle_t rc) {
 bool loadRuntime() {
     stage("QNN_LOAD_BEGIN");
 
-    // Prefer the QNN stack bundled inside the FCL plugin APK. This mirrors
-    // npu_probe: QNN is loaded from the app's own native namespace instead
-    // of directly dlopening /odm vendor paths.
-    const char* paths[] = {
-        "libQnnHtp.so",
-        "libQnnHtp.so",
+    // The Minecraft JVM is launched by FCL/ZL2, so its linker namespace does
+    // not necessarily search the plugin APK's nativeLibraryDir by soname.
+    // npu_probe solved the same class of problem by using an app-owned
+    // directory + absolute dlopen paths. Here we derive the directory of
+    // this already-loaded library and use absolute sibling paths.
+    Dl_info selfInfo{};
+    std::string libDir;
+    if (dladdr(reinterpret_cast<void*>(&loadRuntime), &selfInfo) && selfInfo.dli_fname) {
+        libDir = selfInfo.dli_fname;
+        const size_t slash = libDir.find_last_of('/');
+        if (slash != std::string::npos) libDir.resize(slash);
+    }
+
+    if (libDir.empty()) {
+        g.error = "cannot determine libmcjavanpu.so directory";
+        error(g.error);
+        return false;
+    }
+
+    info("QNN_LIB_DIR=" + libDir);
+
+    // Same environment strategy as the proven npu_probe runner.
+    const std::string adsp =
+        libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
+    const std::string ldPath =
+        libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
+    setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
+    setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
+    info("ADSP_LIBRARY_PATH=" + adsp);
+    info("LD_LIBRARY_PATH=" + ldPath);
+
+    // Load the bundled stack by absolute path. Dependency failures are logged
+    // individually; the final HTP load result decides whether initialization
+    // can continue.
+    const char* deps[] = {
+        "libc++_shared.so",
+        "libQnnSystem.so",
+        "libQnnHtpV73Stub.so",
+        "libQnnHtpV73.so",
+        "libQnnHtpPrepare.so"
+    };
+
+    for (const char* name : deps) {
+        const std::string path = libDir + "/" + name;
+        info(std::string("QNN_DEP_BEGIN path=") + path);
+        dlerror();
+        void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+        if (h) {
+            info(std::string("QNN_DEP_OK name=") + name);
+        } else {
+            const char* err = dlerror();
+            error(std::string("QNN_DEP_FAIL name=") + name +
+                  " error=" + (err ? err : "?"));
+        }
+    }
+
+    const std::string htpPath = libDir + "/libQnnHtp.so";
+    info("DLOPEN_BEGIN path=" + htpPath);
+    dlerror();
+    g.qnn = dlopen(htpPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
+    if (g.qnn) {
+        info("QNN_LOAD_OK path=" + htpPath);
+        return true;
+    }
+
+    const char* err = dlerror();
+    error(std::string("QNN_LOAD_FAIL path=") + htpPath +
+          " error=" + (err ? err : "?"));
+
+    // Keep vendor fallback for diagnostics. Android 16 may reject this path
+    // from the app namespace, but the exact linker error is useful evidence.
+    const char* vendorPaths[] = {
         "/odm/lib64/aiframe/libQnnHtp.so",
         "/odm/lib64/libQnnHtp.so"
     };
-
-    for (const char* path : paths) {
-        info(std::string("DLOPEN_BEGIN path=") + path);
+    for (const char* path : vendorPaths) {
+        info(std::string("VENDOR_DLOPEN_BEGIN path=") + path);
         dlerror();
         g.qnn = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
         if (g.qnn) {
-            info(std::string("QNN_LOAD_OK path=") + path);
+            info(std::string("VENDOR_QNN_LOAD_OK path=") + path);
             return true;
         }
-        const char* err = dlerror();
-        error(std::string("QNN_LOAD_FAIL path=") + path + " error=" + (err ? err : "?"));
+        const char* vendorErr = dlerror();
+        error(std::string("VENDOR_QNN_LOAD_FAIL path=") + path +
+              " error=" + (vendorErr ? vendorErr : "?"));
     }
-    g.error = "dlopen(libQnnHtp.so) failed from bundled and vendor paths";
+
+    g.error = "dlopen bundled libQnnHtp.so failed";
     error(g.error);
     return false;
 }
