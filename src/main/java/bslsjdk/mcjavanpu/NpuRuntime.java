@@ -16,9 +16,17 @@ public final class NpuRuntime {
             NativeLoader.load();
             System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
             available = nativeInit();
-            diagnostics = nativeGetDiagnostics();
             loadError = available ? "" : nativeGetDeviceInfo();
+            try {
+                diagnostics = nativeGetDiagnostics();
+            } catch (UnsatisfiedLinkError missingDiagnostics) {
+                // Keep the real nativeInit/deviceCreate failure visible when an
+                // externally supplied older .so predates nativeGetDiagnostics().
+                diagnostics = "NATIVE_DIAGNOSTICS_UNAVAILABLE " + missingDiagnostics + "\n";
+                System.err.println("[MCJavaNPU] diagnostics JNI missing; preserving native init result: " + missingDiagnostics);
+            }
             System.out.println("[MCJavaNPU] NPU_INIT_RESULT available=" + available);
+            System.out.println("[MCJavaNPU] NPU_DEVICE_INFO=" + loadError);
             System.out.println("[MCJavaNPU] NPU_DIAGNOSTICS_BEGIN\n" + diagnostics + "[MCJavaNPU] NPU_DIAGNOSTICS_END");
         } catch (Throwable error) {
             available = false;
