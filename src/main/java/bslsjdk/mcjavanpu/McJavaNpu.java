@@ -12,33 +12,34 @@ public final class McJavaNpu implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        NpuRuntime.init();
+        Thread.ofVirtual().name("mcjavanpu-init").start(NpuRuntime::init);
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> registerCommands(dispatcher));
         System.out.println("[MCJavaNPU] initialized");
     }
 
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
+                .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
                 .then(Commands.literal("status").executes(context -> {
                     boolean available = NpuRuntime.isAvailable();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] runtime=" + NpuRuntime.isInitialized()
                             + " available=" + available + " device=" + NpuRuntime.getDeviceInfo()), false);
                     return available ? 1 : 0;
                 }))
-                .then(Commands.literal("test").executes(context -> {
+                .then(Commands.literal("test").requires(s -> s.hasPermission(2)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.test();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] test=" + result.name()
                             + " detail=" + result.detail()), false);
                     return result.success() ? 1 : 0;
                 }))
-                .then(Commands.literal("addtest").executes(context -> {
+                .then(Commands.literal("addtest").requires(s -> s.hasPermission(2)).executes(context -> {
                     float[] a = new float[16], b = new float[16];
                     for (int i=0;i<16;i++) { a[i]=i; b[i]=2f; }
                     String result = NpuRuntime.add(a,b);
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] addtest=" + result), false);
                     return result.startsWith("OK HTP_GRAPH_EXECUTE") ? 1 : 0;
                 }))
-                .then(Commands.literal("benchmark").executes(context -> {
+                .then(Commands.literal("benchmark").requires(s -> s.hasPermission(2)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.benchmark();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] benchmark=" + result.name()
                             + " detail=" + result.detail()), false);
