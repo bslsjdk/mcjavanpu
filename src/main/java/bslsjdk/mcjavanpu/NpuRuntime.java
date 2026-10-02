@@ -1,120 +1,89 @@
 package bslsjdk.mcjavanpu;
 
-/** Stable Java-side inference facade. */
+/** Minecraft-side client facade. Actual QNN/HTP execution lives in persistent MCNPU. */
 public final class NpuRuntime {
     private static volatile boolean initialized;
     private static volatile boolean available;
-    private static volatile String loadError = "not initialized";
+    private static volatile String loadError = "service not checked";
     private static volatile String diagnostics = "";
-    private static volatile String tuning = "logLevel=DEBUG;deviceRetries=0;adspExtra=<none>";
+    private static final String tuning = "transport=tcp;host=127.0.0.1;port=38991;backend=HTP_V73";
 
     private NpuRuntime() {}
 
-    public static synchronized void init() {
-        HtpBackend.getInstance().initialize();
-    }
+    public static synchronized void init() { HtpBackend.getInstance().initialize(); }
 
     static synchronized boolean initInternal() {
-        if (initialized && available) return true;
-        try {
-            NativeLoader.load();
-            tuning = buildTuning();
-            nativeConfigure(tuning);
-            System.out.println("[MCJavaNPU] tuning=" + tuning);
-            System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
-            available = nativeInit();
-            loadError = available ? "" : nativeGetDeviceInfo();
-            try {
-                diagnostics = nativeGetDiagnostics();
-            } catch (UnsatisfiedLinkError e) {
-                diagnostics = "NATIVE_DIAGNOSTICS_UNAVAILABLE " + e + "\n";
-                System.err.println("[MCJavaNPU] diagnostics JNI missing: " + e);
-            }
-            System.out.println("[MCJavaNPU] NPU_INIT_RESULT available=" + available);
-            System.out.println("[MCJavaNPU] NPU_DEVICE_INFO=" + loadError);
-            System.out.println("[MCJavaNPU] NPU_DIAGNOSTICS_BEGIN\n" + diagnostics
-                    + "[MCJavaNPU] NPU_DIAGNOSTICS_END");
-        } catch (Throwable error) {
-            available = false;
-            loadError = error.toString();
-            diagnostics = "JAVA_INIT_EXCEPTION " + error + "\n";
-            System.err.println("[MCJavaNPU] native runtime unavailable: " + error);
+        String ping = NpuServiceClient.request("PING");
+        if (!ping.startsWith("PONG MCNPU/")) {
+            available=false; initialized=true; loadError=ping;
+            diagnostics="MCNPU_SERVICE_OFFLINE " + ping;
+            System.err.println("[MCJavaNPU] " + diagnostics);
+            return false;
         }
-        initialized = true;
+        String status=NpuServiceClient.status();
+        available=status.startsWith("QNN HTP ready");
+        initialized=true; loadError=available?"":status;
+        diagnostics="PING="+ping+"\nSTATUS="+status+"\nCAPABILITIES="+NpuServiceClient.capabilities();
+        System.out.println("[MCJavaNPU] persistent MCNPU service connected");
+        System.out.println("[MCJavaNPU] "+diagnostics.replace("\n"," | "));
         return available;
     }
 
-    public static boolean isInitialized() { return initialized; }
-    public static boolean isAvailable() { return available; }
-    public static String getLoadError() { return loadError; }
-    public static String getDiagnostics() { return diagnostics; }
-    public static String getTuning() { return tuning; }
+    public static boolean isInitialized(){return initialized;}
+    public static boolean isAvailable(){return available && NpuServiceClient.isAvailable();}
+    public static String getLoadError(){return loadError;}
+    public static String getDiagnostics(){return diagnostics;}
+    public static String getTuning(){return tuning;}
 
-    private static String buildTuning() {
-        String level = System.getProperty("mcjavanpu.logLevel", "DEBUG").toUpperCase();
-        String retries = System.getProperty("mcjavanpu.deviceRetries", "0");
-        String extra = System.getProperty("mcjavanpu.adspExtra", "").trim();
-        return "logLevel=" + level + ";deviceRetries=" + retries + ";adspExtra=" + (extra.isEmpty() ? "<none>" : extra);
+    public static String getDeviceInfo(){
+        String status=NpuServiceClient.status();
+        if(!status.startsWith("QNN HTP ready")) loadError=status;
+        return status;
     }
 
-    public static String getDeviceInfo() { return nativeGetDeviceInfo(); }
-    public static String getLogPath() { return nativeGetLogPath(); }
-
-    public static TestResult test() {
-        return testInternal();
+    public static String getLogPath(){
+        return "MCNPU service log: query from MCNPU diagnostic UI";
     }
 
-    static TestResult testInternal() {
-        if (!available) return TestResult.failure("UNAVAILABLE", loadError);
-        try {
-            return nativeTest()
-                    ? TestResult.success("PASS", "QNN graphExecute smoke test passed")
-                    : TestResult.failure("FAIL", "QNN graphExecute smoke test failed; see " + getLogPath());
-        } catch (Throwable error) {
-            return TestResult.failure("ERROR", error.toString());
+    public static TestResult test(){return testInternal();}
+
+    static TestResult testInternal(){
+        if(!isAvailable()) return TestResult.failure("UNAVAILABLE",getDeviceInfo());
+        try{
+            String result=NpuServiceClient.smoke();
+            boolean ok=result.startsWith("OK HTP_GRAPH_EXECUTE");
+            return ok?TestResult.success("PASS",result):TestResult.failure("FAIL",result);
+        }catch(Throwable error){return TestResult.failure("ERROR",error.toString());}
+    }
+
+    public static TestResult benchmark(){
+        if(!isAvailable()) return TestResult.failure("UNAVAILABLE",getDeviceInfo());
+        long t0=System.nanoTime(); int pass=0; String last="";
+        for(int i=0;i<8;i++){
+            last=NpuServiceClient.smoke();
+            if(last.startsWith("OK HTP_GRAPH_EXECUTE")) pass++;
         }
+        double ms=(System.nanoTime()-t0)/1_000_000.0;
+        return pass==8
+            ?TestResult.success("READY","8/8 HTP executions; wall_ms="+ms+"; last="+last)
+            :TestResult.failure("FAIL",pass+"/8 HTP executions; last="+last);
     }
 
-    public static TestResult benchmark() {
-        if (!available) return TestResult.failure("UNAVAILABLE", loadError);
-        try {
-            return TestResult.success("READY", nativeBenchmark());
-        } catch (Throwable error) {
-            return TestResult.failure("ERROR", error.toString());
-        }
+    /** Submit a real vector ADD task to the persistent HTP service. */
+    public static String add(float[] a,float[] b){
+        if(!isAvailable()) return "ERR MCNPU_OFFLINE "+getDeviceInfo();
+        return NpuServiceClient.add(a,b);
     }
 
-    public static synchronized void shutdown() {
-        HtpBackend.getInstance().close();
+    public static synchronized void shutdown(){HtpBackend.getInstance().close();}
+
+    static synchronized void shutdownInternal(){
+        // Minecraft must never shut down the independent MCNPU service.
+        initialized=false; available=false;
     }
 
-    static synchronized void shutdownInternal() {
-        if (!initialized) return;
-        if (available) {
-            try { nativeShutdown(); }
-            catch (Throwable error) {
-                System.err.println("[MCJavaNPU] native shutdown failed: " + error);
-            }
-        }
-        available = false;
-        initialized = false;
+    public record TestResult(boolean success,String name,String detail){
+        static TestResult success(String name,String detail){return new TestResult(true,name,detail);}
+        static TestResult failure(String name,String detail){return new TestResult(false,name,detail);}
     }
-
-    public record TestResult(boolean success, String name, String detail) {
-        static TestResult success(String name, String detail) {
-            return new TestResult(true, name, detail);
-        }
-        static TestResult failure(String name, String detail) {
-            return new TestResult(false, name, detail);
-        }
-    }
-
-    private static native void nativeConfigure(String tuning);
-    private static native boolean nativeInit();
-    private static native String nativeGetDeviceInfo();
-    private static native String nativeGetLogPath();
-    private static native String nativeGetDiagnostics();
-    private static native boolean nativeTest();
-    private static native String nativeBenchmark();
-    private static native void nativeShutdown();
 }
