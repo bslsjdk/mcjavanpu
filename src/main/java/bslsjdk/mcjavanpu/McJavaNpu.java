@@ -5,6 +5,7 @@ import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
+import net.minecraft.server.permissions.Permissions;
 import net.minecraft.network.chat.Component;
 
 public final class McJavaNpu implements ModInitializer {
@@ -26,7 +27,7 @@ public final class McJavaNpu implements ModInitializer {
                             + " available=" + available + " device=" + NpuRuntime.getDeviceInfo()), false);
                     return available ? 1 : 0;
                 }))
-                .then(Commands.literal("test").requires(s -> s.hasPermission(2)).executes(context -> {
+                .then(Commands.literal("test").requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.test();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] test=" + result.name()
                             + " detail=" + result.detail()), false);
