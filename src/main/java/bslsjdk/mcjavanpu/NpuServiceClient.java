@@ -7,7 +7,6 @@ import java.nio.file.StandardCopyOption;
 
 public final class NpuServiceClient {
     private static final String NATIVE_NAME = "mcjavanpu_native";
-    private static final String SOCKET_NAME = "mcnpu_ipc_v1";
     private static volatile String nativeLoadError;
 
     static {
@@ -50,6 +49,8 @@ public final class NpuServiceClient {
 
     private static native String nativeRequest(String command);
 
+    private static native void nativeClose();
+
     public static String request(String command) {
         if (command == null || command.isEmpty()) return "ERR EMPTY_COMMAND";
         if (nativeLoadError != null) return "ERR NATIVE_UNAVAILABLE " + nativeLoadError;
@@ -57,6 +58,12 @@ public final class NpuServiceClient {
             return nativeRequest(command);
         } catch (Throwable t) {
             return "ERR NATIVE_RUNTIME " + t.getClass().getSimpleName();
+        }
+    }
+
+    public static void close() {
+        if (nativeLoadError == null) {
+            try { nativeClose(); } catch (Throwable ignored) {}
         }
     }
 
