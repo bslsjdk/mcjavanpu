@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "id": "mcjavanpu",
+  "version": "${version}",
+  "name": "MC Java NPU",
+  "description": "Minecraft Java Fabric NPU runtime and acceleration bridge.",
+  "authors": ["bslsjdk"],
+  "license": "MIT",
+  "environment": "*",
+  "entrypoints": {
+    "main": ["bslsjdk.mcjavanpu.McJavaNpu"]
+  },
+  "depends": {
+    "fabricloader": ">=0.19.5",
+    "minecraft": "~26.3",
+    "java": ">=25",
+    "fabric-api": "*"
+  }
+}
