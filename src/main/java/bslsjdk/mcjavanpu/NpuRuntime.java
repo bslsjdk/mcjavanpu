@@ -5,20 +5,25 @@ public final class NpuRuntime {
     private static volatile boolean initialized;
     private static volatile boolean available;
     private static volatile String loadError = "not initialized";
+    private static volatile String diagnostics = "";
 
     private NpuRuntime() {}
 
     public static synchronized void init() {
-        if (initialized) return;
+        if (initialized && available) return;
 
         try {
             NativeLoader.load();
             System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
             available = nativeInit();
+            diagnostics = nativeGetDiagnostics();
             loadError = available ? "" : nativeGetDeviceInfo();
+            System.out.println("[MCJavaNPU] NPU_INIT_RESULT available=" + available);
+            System.out.println("[MCJavaNPU] NPU_DIAGNOSTICS_BEGIN\n" + diagnostics + "[MCJavaNPU] NPU_DIAGNOSTICS_END");
         } catch (Throwable error) {
             available = false;
             loadError = error.toString();
+            diagnostics = "JAVA_INIT_EXCEPTION " + error + "\n";
             System.err.println("[MCJavaNPU] native runtime unavailable: " + error);
         }
 
@@ -28,6 +33,7 @@ public final class NpuRuntime {
     public static boolean isInitialized() { return initialized; }
     public static boolean isAvailable() { return available; }
     public static String getLoadError() { return loadError; }
+    public static String getDiagnostics() { return diagnostics; }
 
     public static String getDeviceInfo() {
         return nativeGetDeviceInfo();
@@ -83,6 +89,7 @@ public final class NpuRuntime {
     private static native boolean nativeInit();
     private static native String nativeGetDeviceInfo();
     private static native String nativeGetLogPath();
+    private static native String nativeGetDiagnostics();
     private static native boolean nativeTest();
     private static native String nativeBenchmark();
     private static native void nativeShutdown();
