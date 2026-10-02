@@ -13,7 +13,7 @@ base {
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
+    implementation "net.fabricmc:fabric-api:${project.fabric_api_version}"
 }
 
 processResources {
@@ -23,14 +23,15 @@ processResources {
     }
 }
 
+// Zalith 2 / Pojav uses Java 21. Keep class files at version 65.
 tasks.withType(JavaCompile).configureEach {
-    it.options.release = 25
+    options.release = 21
 }
 
 java {
     withSourcesJar()
-    sourceCompatibility = JavaVersion.VERSION_25
-    targetCompatibility = JavaVersion.VERSION_25
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 tasks.register("quickTestJar", Jar) {
