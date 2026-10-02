@@ -89,11 +89,39 @@ Runtime g;
 using GetProvidersFn = Qnn_ErrorHandle_t (*)(const QnnInterface_t ***, uint32_t *);
 
 bool fail(const char* name, Qnn_ErrorHandle_t rc) {
-    char buf[256];
-    std::snprintf(buf, sizeof(buf), "%s rc=%d", name, (int)rc);
+    std::string msg;
+    if (g.iface) {
+        const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
+        if (ftbl.errorGetMessage) {
+            const char* qmsg = nullptr;
+            Qnn_ErrorHandle_t mrc = ftbl.errorGetMessage(rc, &qmsg);
+            if (mrc == QNN_SUCCESS && qmsg) msg = qmsg;
+        }
+    }
+    char buf[768];
+    std::snprintf(buf, sizeof(buf), "%s rc=%d%s%s",
+                  name, (int)rc,
+                  msg.empty() ? "" : " message=",
+                  msg.empty() ? "" : msg.c_str());
     g.error = buf;
     error(g.error);
     return false;
+}
+
+void qnnLogCallback(const char* fmt, QnnLog_Level_t level, uint64_t, va_list args) {
+    if (!fmt) return;
+    char buf[2048];
+    std::vsnprintf(buf, sizeof(buf), fmt, args);
+    const char* levelName = "QNN";
+    switch (level) {
+        case QNN_LOG_LEVEL_ERROR: levelName = "QNN_ERROR"; break;
+        case QNN_LOG_LEVEL_WARN: levelName = "QNN_WARN"; break;
+        case QNN_LOG_LEVEL_INFO: levelName = "QNN_INFO"; break;
+        case QNN_LOG_LEVEL_VERBOSE: levelName = "QNN_VERBOSE"; break;
+        case QNN_LOG_LEVEL_DEBUG: levelName = "QNN_DEBUG"; break;
+        default: break;
+    }
+    logLine(levelName, buf);
 }
 
 bool loadRuntime() {
@@ -258,8 +286,8 @@ bool initQnn() {
 
     stage("BACKEND_CREATE_BEGIN");
     if (ftbl.logCreate) {
-        rc = ftbl.logCreate(nullptr, QNN_LOG_LEVEL_ERROR, &g.logger);
-        info("LOG_CREATE rc=" + std::to_string((int)rc));
+        rc = ftbl.logCreate(qnnLogCallback, QNN_LOG_LEVEL_DEBUG, &g.logger);
+        info("LOG_CREATE rc=" + std::to_string((int)rc) + " level=DEBUG callback=enabled");
         if (rc != QNN_SUCCESS) g.logger = nullptr;
     }
 
@@ -269,7 +297,10 @@ bool initQnn() {
 
     stage("DEVICE_CREATE_BEGIN");
     rc = ftbl.deviceCreate(g.logger, nullptr, &g.device);
-    if (rc != QNN_SUCCESS || !g.device) return fail("deviceCreate", rc);
+    if (rc != QNN_SUCCESS || !g.device) {
+        error("DEVICE_CREATE_FAILED: HTP runtime/device initialization did not complete");
+        return fail("deviceCreate", rc);
+    }
     info("DEVICE_CREATE_OK");
 
     stage("CONTEXT_CREATE_BEGIN");
