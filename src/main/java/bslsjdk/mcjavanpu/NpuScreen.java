@@ -9,6 +9,7 @@ import net.minecraft.network.chat.Component;
 public final class NpuScreen extends Screen {
     private String status = "正在读取 NPU 状态…";
     private String detail = "";
+    private int scroll = 0;
 
     public NpuScreen() {
         super(Component.literal("MC Java NPU 设置"));
@@ -28,16 +29,25 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("性能测试"), b -> runBenchmark())
                 .bounds(cx - 100, y + 52, 200, 20).build());
 
+        addRenderableWidget(Button.builder(Component.literal("上一页"), b -> { scroll = Math.max(0, scroll - 10); })
+                .bounds(cx - 205, y + 78, 100, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal("下一页"), b -> { scroll += 10; })
+                .bounds(cx - 100, y + 78, 100, 20).build());
+
         addRenderableWidget(Button.builder(Component.literal("关闭"), b -> onClose())
-                .bounds(cx - 100, y + 78, 200, 20).build());
+                .bounds(cx + 5, y + 78, 100, 20).build());
 
         refresh();
     }
 
     private void refresh() {
+        NpuRuntime.init();
         boolean available = NpuRuntime.isAvailable();
         status = available ? "NPU：已连接" : "NPU：未连接";
         detail = available ? NpuRuntime.getDeviceInfo() : NpuRuntime.getLoadError();
+        detail = detail + "\n\n" + NpuRuntime.getDiagnostics();
+        scroll = 0;
     }
 
     private void runTest() {
@@ -61,8 +71,17 @@ public final class NpuScreen extends Screen {
         graphics.text(this.font, Component.literal(status), cx - this.font.width(status) / 2, 58, 0xFFFFFFFF, true);
 
         String shown = detail == null ? "" : detail;
-        if (shown.length() > 90) shown = shown.substring(0, 90) + "…";
-        graphics.text(this.font, Component.literal(shown), cx - this.font.width(shown) / 2, 180, 0xFFAAAAAA, false);
+        String[] lines = shown.split("\\R");
+        int maxLines = 13;
+        int start = Math.min(scroll, Math.max(0, lines.length - maxLines));
+        for (int i = 0; i < maxLines && start + i < lines.length; i++) {
+            String line = lines[start + i];
+            if (line.length() > 92) line = line.substring(0, 92) + "…";
+            graphics.text(this.font, Component.literal(line), 12, 205 + i * 9, 0xFFAAAAAA, false);
+        }
+        graphics.text(this.font,
+                Component.literal("诊断行 " + (lines.length == 0 ? 0 : start + 1) + "-" + Math.min(lines.length, start + maxLines) + "/" + lines.length),
+                12, 330, 0xFFFFFFFF, false);
     }
 
     @Override
