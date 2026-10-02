@@ -18,42 +18,7 @@ dependencies {
 
 def nativeLibDir = layout.buildDirectory.dir("generated/native/arm64-v8a")
 
-tasks.register("buildNativeIpc") {
-    inputs.file("src/main/cpp/mcjavanpu_ipc.c")
-    outputs.file(nativeLibDir.map { it.file("libmcjavanpu_native.so") })
-
-    doLast {
-        def ndk = System.getenv("ANDROID_NDK_HOME") ?: System.getenv("ANDROID_NDK_ROOT")
-        if (!ndk) {
-            throw new GradleException("ANDROID_NDK_HOME/ANDROID_NDK_ROOT is required to build the direct IPC native client")
-        }
-
-        def clang = file("${ndk}/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang")
-        if (!clang.exists()) {
-            throw new GradleException("Android NDK clang not found: ${clang}")
-        }
-
-        def javaHome = file(System.getProperty("java.home"))
-        def output = file("${layout.buildDirectory.get()}/generated/native/arm64-v8a/libmcjavanpu_native.so")
-        output.parentFile.mkdirs()
-
-        project.exec {
-            commandLine clang.absolutePath,
-                    "-shared",
-                    "-fPIC",
-                    "-O2",
-                    "-fvisibility=hidden",
-                    "-I${javaHome}/include",
-                    "-I${javaHome}/include/linux",
-                    "src/main/cpp/mcjavanpu_ipc.c",
-                    "-o",
-                    output.absolutePath
-        }
-    }
-}
-
 processResources {
-    dependsOn(tasks.named("buildNativeIpc"))
     inputs.property "version", version
     filesMatching("fabric.mod.json") {
         expand "version": version
