@@ -11,7 +11,9 @@ base {
 }
 
 dependencies {
-    compileOnly files("${System.getenv('ANDROID_HOME')}/platforms/android-35/android.jar")
+    def androidHome = System.getenv("ANDROID_HOME")
+    if (!androidHome) throw new GradleException("ANDROID_HOME is required to compile Android LocalSocket APIs")
+    compileOnly files("${androidHome}/platforms/android-35/android.jar")
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
@@ -45,9 +47,7 @@ tasks.register("quickTestJar", Jar) {
     from(sourceSets.main.output) {
         include "bslsjdk/mcjavanpu/QuickTestMain.class"
         include "bslsjdk/mcjavanpu/NpuRuntime*.class"
-        include "bslsjdk/mcjavanpu/NativeLoader*.class"
-        include "bslsjdk/mcjavanpu/NpuBackend*.class"
-        include "bslsjdk/mcjavanpu/HtpBackend*.class"
+        include "bslsjdk/mcjavanpu/NpuServiceClient*.class"
     }
 
     from(sourceSets.main.output.resourcesDir) {
