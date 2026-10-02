@@ -5,14 +5,24 @@ import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
+import java.util.List;
 
 /**
- * Loads the native runtime supplied by the ZL2/FCL NativeLibPlugin when present.
- * Falls back to the bundled library for standalone use.
+ * Extracts the native MCJavaNPU library and the complete bundled QNN HTP
+ * userspace stack into one private directory, then loads the JNI library.
  */
 public final class NativeLoader {
-    private static final String LIB_NAME = "libmcfclnpu.so";
+    private static final String LIB_NAME = "libmcjavanpu.so";
     private static final String PLUGIN_PATH_PROPERTY = "mcjavanpu.native";
+
+    private static final List<String> QNN_LIBS = List.of(
+            "libc++_shared.so",
+            "libQnnSystem.so",
+            "libQnnHtp.so",
+            "libQnnHtpPrepare.so",
+            "libQnnHtpV73Stub.so",
+            "libQnnHtpV73Skel.so"
+    );
 
     private NativeLoader() {}
 
@@ -24,7 +34,7 @@ public final class NativeLoader {
                 throw new IOException("plugin native library not found: " + path);
             }
 
-            System.out.println("[MCJavaNPU] native source=FCLNativePlugin path=" + path);
+            System.out.println("[MCJavaNPU] native source=external path=" + path);
             System.load(path.toString());
             return;
         }
@@ -34,11 +44,11 @@ public final class NativeLoader {
 
     private static void loadBundled() throws IOException {
         String arch = normalizeArch(System.getProperty("os.arch", ""));
-        String resource = "/natives/" + arch + "/" + LIB_NAME;
+        String base = "/natives/" + arch + "/";
 
-        try (InputStream in = NativeLoader.class.getResourceAsStream(resource)) {
+        try (InputStream in = NativeLoader.class.getResourceAsStream(base + LIB_NAME)) {
             if (in == null) {
-                throw new IOException("native library not bundled: " + resource);
+                throw new IOException("native library not bundled: " + base + LIB_NAME);
             }
 
             String tmpProperty = System.getProperty("java.io.tmpdir");
@@ -50,11 +60,30 @@ public final class NativeLoader {
             Files.createDirectories(root);
 
             Path dir = Files.createTempDirectory(root, "mcjavanpu-");
-            Path target = dir.resolve(LIB_NAME);
 
+            // Keep every host-side QNN dependency beside libmcjavanpu.so.
+            // The HTP V73 Skel is also extracted here so ADSP_LIBRARY_PATH
+            // can expose it to the FastRPC loader, but it is NOT dlopen'ed
+            // into the host process.
+            for (String lib : QNN_LIBS) {
+                String resource = base + "qnn/" + lib;
+                try (InputStream qnn = NativeLoader.class.getResourceAsStream(resource)) {
+                    if (qnn == null) {
+                        throw new IOException("QNN library not bundled: " + resource);
+                    }
+                    Files.copy(qnn, dir.resolve(lib), StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+
+            Path target = dir.resolve(LIB_NAME);
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
 
             System.out.println("[MCJavaNPU] native source=bundled path=" + target);
+            System.out.println("[MCJavaNPU] qnn dir=" + dir);
+
+            // The JNI library has libc++_shared.so as a DT_NEEDED dependency.
+            // Load it from the same extracted directory before the JNI library.
+            System.load(dir.resolve("libc++_shared.so").toString());
             System.load(target.toString());
         }
     }
