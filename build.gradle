@@ -11,6 +11,7 @@ base {
 }
 
 dependencies {
+    compileOnly files("${System.getenv('ANDROID_HOME')}/platforms/android-35/android.jar")
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
     implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
