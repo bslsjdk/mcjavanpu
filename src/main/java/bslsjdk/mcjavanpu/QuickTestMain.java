@@ -18,7 +18,7 @@ public final class QuickTestMain {
             long initMs = (System.nanoTime() - t0) / 1_000_000L;
             System.out.println("INIT_AVAILABLE=" + NpuRuntime.isAvailable());
             System.out.println("INIT_TIME_MS=" + initMs);
-            System.out.println("DEVICE_INFO=" + NpuRuntime.getLoadError());
+            System.out.println("DEVICE_INFO=" + NpuRuntime.getDeviceInfo());
             System.out.println("--- DIAGNOSTICS ---");
             System.out.print(NpuRuntime.getDiagnostics());
             System.out.println("--- END DIAGNOSTICS ---");
@@ -58,6 +58,7 @@ public final class QuickTestMain {
             else if (arg.equals("--info")) System.setProperty("mcjavanpu.logLevel", "INFO");
             else if (arg.equals("--retries=1")) System.setProperty("mcjavanpu.deviceRetries", "1");
             else if (arg.equals("--retries=2")) System.setProperty("mcjavanpu.deviceRetries", "2");
+            else if (arg.equals("--retries=3")) System.setProperty("mcjavanpu.deviceRetries", "3");
             else if (arg.startsWith("--repeat=")) System.setProperty("mcjavanpu.repeat", arg.substring("--repeat=".length()));
             else if (arg.startsWith("--adsp-extra=")) System.setProperty("mcjavanpu.adspExtra", arg.substring("--adsp-extra=".length()));
         }
