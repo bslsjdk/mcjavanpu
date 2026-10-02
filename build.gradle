@@ -37,7 +37,7 @@ tasks.register("buildNativeIpc") {
         def output = file("${layout.buildDirectory.get()}/generated/native/arm64-v8a/libmcjavanpu_native.so")
         output.parentFile.mkdirs()
 
-        exec {
+        project.exec {
             commandLine clang.absolutePath,
                     "-shared",
                     "-fPIC",
