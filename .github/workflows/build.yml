@@ -63,8 +63,13 @@ jobs:
       - name: Build Fabric mod
         run: gradle build --no-daemon
 
-      - name: Upload mod jar
+      - name: Build standalone executable QuickTest JAR
+        run: gradle quickTestJar --no-daemon
+
+      - name: Upload mod and QuickTest JAR
         uses: actions/upload-artifact@v4
         with:
           name: mcjavanpu
-          path: build/libs/*.jar
+          path: |
+            build/libs/*.jar
+            build/quicktest/*.jar
