@@ -6,6 +6,10 @@
 #include <cstring>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <chrono>
+#include <ctime>
+#include <filesystem>
 
 #include "QnnInterface.h"
 #include "QnnLog.h"
@@ -23,6 +27,45 @@
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
 
 namespace {
+std::ofstream gLog;
+const char* kLogPath = "logs/mcjavanpu-npu.log";
+
+void ensureLog() {
+    if (gLog.is_open()) return;
+    try {
+        std::filesystem::create_directories("logs");
+        gLog.open(kLogPath, std::ios::app);
+    } catch (...) {
+    }
+}
+
+void logLine(const char* level, const std::string& msg) {
+    ensureLog();
+    if (gLog.is_open()) {
+        auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
+        char ts[64];
+        std::tm tm{};
+        localtime_r(&now, &tm);
+        std::strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
+        gLog << "[" << ts << "] [" << level << "] " << msg << std::endl;
+        gLog.flush();
+    }
+}
+
+void info(const std::string& msg) {
+    LOGI("%s", msg.c_str());
+    logLine("INFO", msg);
+}
+
+void error(const std::string& msg) {
+    LOGE("%s", msg.c_str());
+    logLine("ERROR", msg);
+}
+
+void stage(const std::string& msg) {
+    info("STAGE " + msg);
+}
+
 struct Runtime {
     void* qnn = nullptr;
     const QnnInterface_t* iface = nullptr;
@@ -30,7 +73,7 @@ struct Runtime {
     Qnn_BackendHandle_t backend = nullptr;
     Qnn_DeviceHandle_t device = nullptr;
     Qnn_ContextHandle_t context = nullptr;
-    std::string info;
+    std::string infoText;
     std::string error;
     bool ready = false;
 };
@@ -38,46 +81,52 @@ Runtime g;
 
 using GetProvidersFn = Qnn_ErrorHandle_t (*)(const QnnInterface_t ***, uint32_t *);
 
-bool fail(const char* stage, Qnn_ErrorHandle_t rc) {
+bool fail(const char* name, Qnn_ErrorHandle_t rc) {
     char buf[256];
-    std::snprintf(buf, sizeof(buf), "%s rc=%d", stage, (int)rc);
+    std::snprintf(buf, sizeof(buf), "%s rc=%d", name, (int)rc);
     g.error = buf;
-    LOGE("%s", g.error.c_str());
+    error(g.error);
     return false;
 }
 
 bool loadRuntime() {
+    stage("QNN_LOAD_BEGIN");
     const char* paths[] = {
         "/odm/lib64/aiframe/libQnnHtp.so",
         "/odm/lib64/libQnnHtp.so"
     };
 
     for (const char* path : paths) {
+        info(std::string("DLOPEN_BEGIN path=") + path);
         g.qnn = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
         if (g.qnn) {
-            LOGI("QNN loaded: %s", path);
+            info(std::string("QNN_LOAD_OK path=") + path);
             return true;
         }
         const char* err = dlerror();
-        LOGE("QNN load failed: %s (%s)", path, err ? err : "?");
+        error(std::string("QNN_LOAD_FAIL path=") + path + " error=" + (err ? err : "?"));
     }
     g.error = "dlopen(libQnnHtp.so) failed";
+    error(g.error);
     return false;
 }
 
 bool initQnn() {
     g.error.clear();
-    g.info.clear();
+    g.infoText.clear();
+    stage("INIT_BEGIN");
 
     if (!loadRuntime()) return false;
 
+    stage("GET_PROVIDERS_BEGIN");
     auto getProviders =
         reinterpret_cast<GetProvidersFn>(dlsym(g.qnn, "QnnInterface_getProviders"));
     if (!getProviders) {
         g.error = "dlsym QnnInterface_getProviders failed";
-        LOGE("%s", g.error.c_str());
+        error(g.error);
         return false;
     }
+    info("GET_PROVIDERS_SYMBOL_OK");
 
     const QnnInterface_t** providers = nullptr;
     uint32_t count = 0;
@@ -85,48 +134,47 @@ bool initQnn() {
     if (rc != QNN_SUCCESS || !providers || count == 0) {
         return fail("getProviders", rc);
     }
+    info("GET_PROVIDERS_OK count=" + std::to_string(count));
 
     for (uint32_t i = 0; i < count; ++i) {
-        if (providers[i] && providers[i]->backendId == BACKEND_ID_HTP) {
-            g.iface = providers[i];
-            break;
+        if (providers[i]) {
+            info("PROVIDER[" + std::to_string(i) + "] backendId=" +
+                 std::to_string((unsigned)providers[i]->backendId));
+            if (providers[i]->backendId == BACKEND_ID_HTP) {
+                g.iface = providers[i];
+            }
         }
     }
+
     if (!g.iface) {
         g.iface = providers[0];
-        LOGI("HTP provider id=%d not found; using provider[0] id=%d",
-             BACKEND_ID_HTP, (int)g.iface->backendId);
+        info("HTP_PROVIDER_NOT_FOUND using provider[0]");
     } else {
-        LOGI("selected HTP provider id=%d", (int)g.iface->backendId);
+        info("HTP_PROVIDER_SELECTED backendId=6");
     }
 
     const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
 
+    stage("BACKEND_CREATE_BEGIN");
     if (ftbl.logCreate) {
         rc = ftbl.logCreate(nullptr, QNN_LOG_LEVEL_ERROR, &g.logger);
-        if (rc != QNN_SUCCESS) {
-            LOGI("logCreate rc=%d; continuing without logger", (int)rc);
-            g.logger = nullptr;
-        }
+        info("LOG_CREATE rc=" + std::to_string((int)rc));
+        if (rc != QNN_SUCCESS) g.logger = nullptr;
     }
 
     rc = ftbl.backendCreate(g.logger, nullptr, &g.backend);
-    if (rc != QNN_SUCCESS || !g.backend) {
-        return fail("backendCreate", rc);
-    }
-    LOGI("backendCreate OK");
+    if (rc != QNN_SUCCESS || !g.backend) return fail("backendCreate", rc);
+    info("BACKEND_CREATE_OK");
 
+    stage("DEVICE_CREATE_BEGIN");
     rc = ftbl.deviceCreate(g.logger, nullptr, &g.device);
-    if (rc != QNN_SUCCESS || !g.device) {
-        return fail("deviceCreate", rc);
-    }
-    LOGI("deviceCreate OK");
+    if (rc != QNN_SUCCESS || !g.device) return fail("deviceCreate", rc);
+    info("DEVICE_CREATE_OK");
 
+    stage("CONTEXT_CREATE_BEGIN");
     rc = ftbl.contextCreate(g.backend, g.device, nullptr, &g.context);
-    if (rc != QNN_SUCCESS || !g.context) {
-        return fail("contextCreate", rc);
-    }
-    LOGI("contextCreate OK");
+    if (rc != QNN_SUCCESS || !g.context) return fail("contextCreate", rc);
+    info("CONTEXT_CREATE_OK");
 
     char buf[256];
     std::snprintf(buf, sizeof(buf),
@@ -135,10 +183,11 @@ bool initQnn() {
                   (unsigned)count,
                   (unsigned)g.iface->apiVersion.coreApiVersion.major,
                   (unsigned)g.iface->apiVersion.coreApiVersion.minor);
-    g.info = buf;
+    g.infoText = buf;
     g.ready = true;
 
-    LOGI("QNN ready: %s", g.info.c_str());
+    stage("INIT_SUCCESS");
+    info("QNN_READY " + g.infoText);
     return true;
 }
 
@@ -159,8 +208,12 @@ Qnn_Tensor_t makeTensor(const char* name, Qnn_TensorType_t type,
 }
 
 bool smokeTest() {
-    if (!g.ready) return false;
+    if (!g.ready) {
+        error("SMOKE_SKIPPED runtime_not_ready");
+        return false;
+    }
 
+    stage("SMOKE_BEGIN");
     const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
     const uint32_t n = 16;
     uint32_t dims[1] = {n};
@@ -168,9 +221,10 @@ bool smokeTest() {
     Qnn_GraphHandle_t graph = nullptr;
     Qnn_ErrorHandle_t rc = ftbl.graphCreate(g.context, "mcjavanpu_smoke", nullptr, &graph);
     if (rc != QNN_SUCCESS || !graph) {
-        LOGE("graphCreate rc=%d", (int)rc);
+        error("GRAPH_CREATE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
+    info("GRAPH_CREATE_OK");
 
     Qnn_Tensor_t a = makeTensor("a", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_32, dims, 1);
     Qnn_Tensor_t b = makeTensor("b", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_32, dims, 1);
@@ -180,9 +234,10 @@ bool smokeTest() {
     if (rc == QNN_SUCCESS) rc = ftbl.tensorCreateGraphTensor(graph, &b);
     if (rc == QNN_SUCCESS) rc = ftbl.tensorCreateGraphTensor(graph, &c);
     if (rc != QNN_SUCCESS) {
-        LOGE("tensorCreateGraphTensor rc=%d", (int)rc);
+        error("TENSOR_CREATE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
+    info("TENSOR_CREATE_OK");
 
     Qnn_Scalar_t scalar = QNN_SCALAR_INIT;
     scalar.dataType = QNN_DATATYPE_UINT_32;
@@ -207,15 +262,17 @@ bool smokeTest() {
 
     rc = ftbl.graphAddNode(graph, op);
     if (rc != QNN_SUCCESS) {
-        LOGE("graphAddNode rc=%d", (int)rc);
+        error("GRAPH_ADD_NODE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
+    info("GRAPH_ADD_NODE_OK");
 
     rc = ftbl.graphFinalize(graph, nullptr, nullptr);
     if (rc != QNN_SUCCESS) {
-        LOGE("graphFinalize rc=%d", (int)rc);
+        error("GRAPH_FINALIZE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
+    info("GRAPH_FINALIZE_OK");
 
     std::vector<float> av(n), bv(n), cv(n, -999.0f);
     for (uint32_t i = 0; i < n; ++i) {
@@ -223,9 +280,7 @@ bool smokeTest() {
         bv[i] = 2.0f;
     }
 
-    Qnn_Tensor_t ea = a;
-    Qnn_Tensor_t eb = b;
-    Qnn_Tensor_t ec = c;
+    Qnn_Tensor_t ea = a, eb = b, ec = c;
     ea.v1.clientBuf.data = av.data();
     ea.v1.clientBuf.dataSize = sizeof(float) * n;
     eb.v1.clientBuf.data = bv.data();
@@ -236,27 +291,42 @@ bool smokeTest() {
     Qnn_Tensor_t execIn[2] = {ea, eb};
     Qnn_Tensor_t execOut[1] = {ec};
 
+    stage("GRAPH_EXECUTE_BEGIN");
+    auto t0 = std::chrono::steady_clock::now();
     rc = ftbl.graphExecute(graph, execIn, 2, execOut, 1, nullptr, nullptr);
+    auto t1 = std::chrono::steady_clock::now();
+    auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
+
+    info("GRAPH_EXECUTE_RETURN rc=" + std::to_string((int)rc) +
+         " elapsed_us=" + std::to_string(us));
+
     if (rc != QNN_SUCCESS) {
-        LOGE("graphExecute rc=%d", (int)rc);
+        error("GRAPH_EXECUTE_FAIL rc=" + std::to_string((int)rc));
         return false;
     }
 
     for (uint32_t i = 0; i < n; ++i) {
         if (cv[i] != av[i] + bv[i]) {
-            LOGE("smoke mismatch i=%u got=%f expected=%f", i, cv[i], av[i] + bv[i]);
+            error("OUTPUT_VERIFY_FAIL index=" + std::to_string(i) +
+                  " got=" + std::to_string(cv[i]) +
+                  " expected=" + std::to_string(av[i] + bv[i]));
             return false;
         }
     }
 
-    LOGI("smoke test PASS");
+    stage("SMOKE_SUCCESS");
+    info("OUTPUT_VERIFY_OK");
     return true;
 }
 
 void shutdownRuntime() {
-    if (!g.iface) return;
-    const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
+    stage("SHUTDOWN_BEGIN");
+    if (!g.iface) {
+        info("SHUTDOWN_NO_RUNTIME");
+        return;
+    }
 
+    const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
     if (ftbl.contextFree && g.context) ftbl.contextFree(g.context, nullptr);
     if (ftbl.deviceFree && g.device) ftbl.deviceFree(g.device);
     if (ftbl.backendFree && g.backend) ftbl.backendFree(g.backend);
@@ -271,6 +341,7 @@ void shutdownRuntime() {
     if (g.qnn) dlclose(g.qnn);
     g.qnn = nullptr;
     g.iface = nullptr;
+    info("SHUTDOWN_DONE");
 }
 }
 
@@ -282,7 +353,12 @@ Java_bslsjdk_mcjavanpu_NpuRuntime_nativeInit(JNIEnv*, jclass) {
 extern "C" JNIEXPORT jstring JNICALL
 Java_bslsjdk_mcjavanpu_NpuRuntime_nativeGetDeviceInfo(JNIEnv* env, jclass) {
     if (!g.error.empty()) return env->NewStringUTF(g.error.c_str());
-    return env->NewStringUTF(g.info.empty() ? "unknown" : g.info.c_str());
+    return env->NewStringUTF(g.infoText.empty() ? "unknown" : g.infoText.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_bslsjdk_mcjavanpu_NpuRuntime_nativeGetLogPath(JNIEnv* env, jclass) {
+    return env->NewStringUTF(kLogPath);
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
