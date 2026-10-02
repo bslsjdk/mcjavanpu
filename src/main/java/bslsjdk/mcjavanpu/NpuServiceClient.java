@@ -1,14 +1,15 @@
 package bslsjdk.mcjavanpu;
 
-import android.net.LocalSocket;
-import android.net.LocalSocketAddress;
-import android.os.Process;
 import java.io.*;
-import java.lang.reflect.Method;
+import java.net.InetAddress;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 
 public final class NpuServiceClient {
-    private static final String SOCKET_NAME = "mcnpu_ipc_v1";
-    private static LocalSocket socket;
+    private static final String HOST = "127.0.0.1";
+    private static final int PORT = 38761;
+    private static final String AUTH = "MCNPU/1";
+    private static Socket socket;
     private static BufferedWriter out;
     private static BufferedReader in;
 
@@ -16,40 +17,23 @@ public final class NpuServiceClient {
 
     private static void connect() throws IOException {
         close();
-        socket = new LocalSocket();
-        socket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
+        socket = new Socket(InetAddress.getLoopbackAddress(), PORT);
         socket.setSoTimeout(3000);
-        verifyPeer();
-        out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
-        in = new BufferedReader(new InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
-    }
-
-    private static void verifyPeer() throws IOException {
-        try {
-            android.net.Credentials peer = socket.getPeerCredentials();
-            int actualUid = peer.getUid();
-            Class<?> activityThread = Class.forName("android.app.ActivityThread");
-            Method currentApplication = activityThread.getMethod("currentApplication");
-            Object app = currentApplication.invoke(null);
-            if (!(app instanceof android.app.Application)) {
-                throw new IOException("cannot resolve Android application context");
-            }
-            android.content.pm.ApplicationInfo info =
-                    ((android.app.Application) app).getPackageManager()
-                            .getApplicationInfo("bslsjdk.mcnpu", 0);
-            if (actualUid != info.uid) {
-                throw new IOException("unexpected MCNPU peer uid=" + actualUid + " expected=" + info.uid);
-            }
-        } catch (IOException e) {
-            throw e;
-        } catch (Throwable e) {
-            throw new IOException("MCNPU peer verification failed: " + e.getClass().getSimpleName(), e);
+        out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), StandardCharsets.UTF_8));
+        in = new BufferedReader(new InputStreamReader(socket.getInputStream(), StandardCharsets.UTF_8));
+        out.write("AUTH " + AUTH);
+        out.write("\n");
+        out.flush();
+        String reply = in.readLine();
+        if (!"OK AUTH".equals(reply)) {
+            close();
+            throw new IOException("MCNPU auth rejected: " + reply);
         }
     }
 
     public static synchronized String request(String command) {
         try {
-            if (socket == null || !socket.isConnected()) connect();
+            if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
             out.write(command);
             out.write("\n");
             out.flush();
