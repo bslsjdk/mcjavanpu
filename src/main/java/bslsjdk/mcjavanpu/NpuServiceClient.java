@@ -1,44 +1,62 @@
 package bslsjdk.mcjavanpu;
 
+import android.net.LocalSocket;
+import android.net.LocalSocketAddress;
 import java.io.*;
-import java.net.InetSocketAddress;
-import java.net.Socket;
 
 public final class NpuServiceClient {
-    private static final int PORT = 38991;
+    private static final String SOCKET_NAME = "mcnpu_ipc_v1";
+    private static LocalSocket socket;
+    private static BufferedWriter out;
+    private static BufferedReader in;
+
     private NpuServiceClient() {}
 
-    public static String request(String command) {
-        try (Socket socket = new Socket()) {
-            socket.connect(new InetSocketAddress("127.0.0.1", PORT), 500);
-            socket.setSoTimeout(3000);
-            BufferedWriter out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream()));
-            BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
+    private static void connect() throws IOException {
+        close();
+        socket = new LocalSocket();
+        socket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
+        socket.setSoTimeout(3000);
+        out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
+        in = new BufferedReader(new InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    public static synchronized String request(String command) {
+        try {
+            if (socket == null || !socket.isConnected()) connect();
             out.write(command);
             out.write("\n");
             out.flush();
             String line = in.readLine();
-            return line == null ? "ERR EMPTY_REPLY" : line;
-        } catch (Throwable t) {
-            return "ERR SERVICE_UNAVAILABLE " + t.getClass().getSimpleName();
+            if (line == null) throw new EOFException("service closed IPC");
+            return line;
+        } catch (Throwable first) {
+            close();
+            try {
+                connect();
+                out.write(command);
+                out.write("\n");
+                out.flush();
+                String line = in.readLine();
+                return line == null ? "ERR EMPTY_REPLY" : line;
+            } catch (Throwable second) {
+                close();
+                return "ERR SERVICE_UNAVAILABLE " + second.getClass().getSimpleName();
+            }
         }
     }
 
-    public static boolean isAvailable() {
-        return request("PING").startsWith("PONG MCNPU/");
+    public static synchronized void close() {
+        try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
+        socket = null;
+        out = null;
+        in = null;
     }
 
-    public static String status() {
-        return request("STATUS");
-    }
-
-    public static String smoke() {
-        return request("SMOKE");
-    }
-
-    public static String capabilities() {
-        return request("CAPABILITIES");
-    }
+    public static boolean isAvailable() { return request("PING").startsWith("PONG MCNPU/"); }
+    public static String status() { return request("STATUS"); }
+    public static String smoke() { return request("SMOKE"); }
+    public static String capabilities() { return request("CAPABILITIES"); }
 
     public static String add(float[] a, float[] b) {
         if (a == null || b == null || a.length == 0 || a.length != b.length || a.length > 1024)
