@@ -91,13 +91,20 @@ bool fail(const char* name, Qnn_ErrorHandle_t rc) {
 
 bool loadRuntime() {
     stage("QNN_LOAD_BEGIN");
+
+    // Prefer the QNN stack bundled inside the FCL plugin APK. This mirrors
+    // npu_probe: QNN is loaded from the app's own native namespace instead
+    // of directly dlopening /odm vendor paths.
     const char* paths[] = {
+        "libQnnHtp.so",
+        "libQnnHtp.so",
         "/odm/lib64/aiframe/libQnnHtp.so",
         "/odm/lib64/libQnnHtp.so"
     };
 
     for (const char* path : paths) {
         info(std::string("DLOPEN_BEGIN path=") + path);
+        dlerror();
         g.qnn = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
         if (g.qnn) {
             info(std::string("QNN_LOAD_OK path=") + path);
@@ -106,7 +113,7 @@ bool loadRuntime() {
         const char* err = dlerror();
         error(std::string("QNN_LOAD_FAIL path=") + path + " error=" + (err ? err : "?"));
     }
-    g.error = "dlopen(libQnnHtp.so) failed";
+    g.error = "dlopen(libQnnHtp.so) failed from bundled and vendor paths";
     error(g.error);
     return false;
 }
