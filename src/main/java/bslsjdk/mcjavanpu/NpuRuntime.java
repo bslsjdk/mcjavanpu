@@ -6,6 +6,7 @@ public final class NpuRuntime {
     private static volatile boolean available;
     private static volatile String loadError = "not initialized";
     private static volatile String diagnostics = "";
+    private static volatile String tuning = "logLevel=DEBUG;deviceRetries=0;adspExtra=<none>";
 
     private NpuRuntime() {}
 
@@ -17,6 +18,9 @@ public final class NpuRuntime {
         if (initialized && available) return true;
         try {
             NativeLoader.load();
+            tuning = buildTuning();
+            nativeConfigure(tuning);
+            System.out.println("[MCJavaNPU] tuning=" + tuning);
             System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
             available = nativeInit();
             loadError = available ? "" : nativeGetDeviceInfo();
@@ -44,6 +48,14 @@ public final class NpuRuntime {
     public static boolean isAvailable() { return available; }
     public static String getLoadError() { return loadError; }
     public static String getDiagnostics() { return diagnostics; }
+    public static String getTuning() { return tuning; }
+
+    private static String buildTuning() {
+        String level = System.getProperty("mcjavanpu.logLevel", "DEBUG").toUpperCase();
+        String retries = System.getProperty("mcjavanpu.deviceRetries", "0");
+        String extra = System.getProperty("mcjavanpu.adspExtra", "").trim();
+        return "logLevel=" + level + ";deviceRetries=" + retries + ";adspExtra=" + (extra.isEmpty() ? "<none>" : extra);
+    }
 
     public static String getDeviceInfo() { return nativeGetDeviceInfo(); }
     public static String getLogPath() { return nativeGetLogPath(); }
@@ -97,6 +109,7 @@ public final class NpuRuntime {
         }
     }
 
+    private static native void nativeConfigure(String tuning);
     private static native boolean nativeInit();
     private static native String nativeGetDeviceInfo();
     private static native String nativeGetLogPath();
