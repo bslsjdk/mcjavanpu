@@ -11,9 +11,7 @@ public final class McJavaNpuClient implements ClientModInitializer {
 
     @Override
     public void onInitializeClient() {
-        // The native QNN/HTP runtime must be initialized before the status
-        // screen can report availability. Keep it initialized for the client
-        // lifetime so the QNN context can be reused by future workloads.
+        // MCNPU is a separate Android service. Do not load QNN inside Minecraft.
         System.out.println("[MCJavaNPU] external MCNPU service: " + NpuServiceClient.status());
 
         KeyMapping.Category category = KeyMapping.Category.register(
