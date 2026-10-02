@@ -152,10 +152,12 @@ bool loadRuntime() {
     // FastRPC/HTP uses colon-separated search paths.  The V73 Skel is a
     // DSP-side image: it must be discoverable through ADSP_LIBRARY_PATH, not
     // dlopen'ed into the ARM64 host process.
+    // FastRPC on this Android 16/HTP V73 stack uses semicolon-separated
+    // ADSP_LIBRARY_PATH entries. This matches the known-good npu_probe runner.
     const std::string adsp =
-        libDir + ":/vendor/dsp/cdsp:/vendor/lib/rfsa/adsp:/system/lib/rfsa/adsp:/dsp";
+        libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
     const std::string ldPath =
-        libDir + ":/vendor/lib64:/vendor/dsp/cdsp";
+        libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
     setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
     info("ADSP_LIBRARY_PATH=" + adsp);
@@ -164,11 +166,14 @@ bool loadRuntime() {
     // Load the bundled stack by absolute path. Dependency failures are logged
     // individually; the final HTP load result decides whether initialization
     // can continue.
+    // Do not dlopen the V73 Stub from the ARM64 app process. Its DT_NEEDED
+    // chain contains libcdsprpc.so, which Android's app linker namespace may
+    // reject even though QNN can resolve/use the DSP side through FastRPC.
+    // The known-good probe does not explicitly dlopen the stub either.
     const char* deps[] = {
         "libc++_shared.so",
         "libQnnSystem.so",
-        "libQnnHtpPrepare.so",
-        "libQnnHtpV73Stub.so"
+        "libQnnHtpPrepare.so"
     };
 
     for (const char* name : deps) {
