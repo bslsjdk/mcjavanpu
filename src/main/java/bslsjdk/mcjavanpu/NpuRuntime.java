@@ -13,8 +13,9 @@ public final class NpuRuntime {
 
         try {
             NativeLoader.load();
+            System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
             available = nativeInit();
-            loadError = available ? "" : "nativeInit() returned false";
+            loadError = available ? "" : nativeGetDeviceInfo();
         } catch (Throwable error) {
             available = false;
             loadError = error.toString();
@@ -29,7 +30,11 @@ public final class NpuRuntime {
     public static String getLoadError() { return loadError; }
 
     public static String getDeviceInfo() {
-        return available ? nativeGetDeviceInfo() : "unavailable";
+        return nativeGetDeviceInfo();
+    }
+
+    public static String getLogPath() {
+        return nativeGetLogPath();
     }
 
     public static TestResult test() {
@@ -37,7 +42,7 @@ public final class NpuRuntime {
         try {
             return nativeTest()
                     ? TestResult.success("PASS", "QNN graphExecute smoke test passed")
-                    : TestResult.failure("FAIL", "QNN graphExecute smoke test failed");
+                    : TestResult.failure("FAIL", "QNN graphExecute smoke test failed; see " + getLogPath());
         } catch (Throwable error) {
             return TestResult.failure("ERROR", error.toString());
         }
@@ -77,6 +82,7 @@ public final class NpuRuntime {
 
     private static native boolean nativeInit();
     private static native String nativeGetDeviceInfo();
+    private static native String nativeGetLogPath();
     private static native boolean nativeTest();
     private static native String nativeBenchmark();
     private static native void nativeShutdown();
