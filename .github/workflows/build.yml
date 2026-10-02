@@ -19,6 +19,15 @@ jobs:
           distribution: temurin
           java-version: "25"
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v4
+        with:
+          packages: ""
+
+      - name: Install Android NDK
+        run: |
+          sdkmanager --install "ndk;27.0.12077973"
+          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
