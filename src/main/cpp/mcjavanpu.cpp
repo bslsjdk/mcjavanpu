@@ -33,7 +33,24 @@ namespace {
 std::ofstream gLog;
 std::string gTrace;
 const char* kLogPath = "logs/mcjavanpu-npu.log";
-const size_t kMaxTrace = 48000;
+const size_t kMaxTrace = 96000;
+int envInt(const char* name, int fallback) {
+    const char* v = std::getenv(name);
+    if (!v || !*v) return fallback;
+    char* end = nullptr;
+    long n = std::strtol(v, &end, 10);
+    if (end == v) return fallback;
+    return static_cast<int>(n);
+}
+std::string envStr(const char* name, const char* fallback = "") {
+    const char* v = std::getenv(name);
+    return (v && *v) ? std::string(v) : std::string(fallback);
+}
+std::string rcHex(Qnn_ErrorHandle_t rc) {
+    char b[32];
+    std::snprintf(b, sizeof(b), "0x%08x", (unsigned)rc);
+    return b;
+}
 
 void ensureLog() {
     if (gLog.is_open()) return;
@@ -104,7 +121,7 @@ bool fail(const char* name, Qnn_ErrorHandle_t rc) {
                   msg.empty() ? "" : " message=",
                   msg.empty() ? "" : msg.c_str());
     g.error = buf;
-    error(g.error);
+    error(g.error + " hex=" + rcHex(rc));
     return false;
 }
 
@@ -147,6 +164,11 @@ bool loadRuntime() {
     }
 
     info("QNN_LIB_DIR=" + libDir);
+    info("ANDROID_API=" + std::to_string((int)__ANDROID_API__) +
+         " ABI=arm64-v8a");
+    info("TUNING_LOG_LEVEL=" + std::to_string(envInt("MCJAVANPU_QNN_LOG_LEVEL", (int)QNN_LOG_LEVEL_DEBUG)));
+    info("TUNING_DEVICE_RETRIES=" + std::to_string(envInt("MCJAVANPU_DEVICE_RETRIES", 0)));
+    info("TUNING_ADSP_EXTRA=" + envStr("MCJAVANPU_ADSP_EXTRA", "<none>"));
 
     // Same environment strategy as the proven npu_probe runner.
     // FastRPC/HTP uses colon-separated search paths.  The V73 Skel is a
@@ -154,8 +176,10 @@ bool loadRuntime() {
     // dlopen'ed into the ARM64 host process.
     // FastRPC on this Android 16/HTP V73 stack uses semicolon-separated
     // ADSP_LIBRARY_PATH entries. This matches the known-good npu_probe runner.
-    const std::string adsp =
+    std::string adsp =
         libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
+    const std::string adspExtra = envStr("MCJAVANPU_ADSP_EXTRA");
+    if (!adspExtra.empty()) adsp += ";" + adspExtra;
     const std::string ldPath =
         libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
@@ -261,7 +285,15 @@ bool initQnn() {
 
     stage("BACKEND_CREATE_BEGIN");
     if (ftbl.logCreate) {
-        rc = ftbl.logCreate(qnnLogCallback, QNN_LOG_LEVEL_DEBUG, &g.logger);
+        const int requestedLogLevel = envInt("MCJAVANPU_QNN_LOG_LEVEL", (int)QNN_LOG_LEVEL_DEBUG);
+        const QnnLog_Level_t qnnLevel =
+            requestedLogLevel <= (int)QNN_LOG_LEVEL_ERROR ? QNN_LOG_LEVEL_ERROR :
+            requestedLogLevel == (int)QNN_LOG_LEVEL_WARN ? QNN_LOG_LEVEL_WARN :
+            requestedLogLevel == (int)QNN_LOG_LEVEL_INFO ? QNN_LOG_LEVEL_INFO :
+            requestedLogLevel == (int)QNN_LOG_LEVEL_VERBOSE ? QNN_LOG_LEVEL_VERBOSE :
+            requestedLogLevel == (int)QNN_LOG_LEVEL_DEBUG ? QNN_LOG_LEVEL_DEBUG :
+            QNN_LOG_LEVEL_DEBUG;
+        rc = ftbl.logCreate(qnnLogCallback, qnnLevel, &g.logger);
         info("LOG_CREATE rc=" + std::to_string((int)rc) + " level=DEBUG callback=enabled");
         if (rc != QNN_SUCCESS) g.logger = nullptr;
     }
@@ -271,7 +303,17 @@ bool initQnn() {
     info("BACKEND_CREATE_OK");
 
     stage("DEVICE_CREATE_BEGIN");
-    rc = ftbl.deviceCreate(g.logger, nullptr, &g.device);
+    const int retries = envInt("MCJAVANPU_DEVICE_RETRIES", 0);
+    for (int attempt = 0; attempt <= retries; ++attempt) {
+        info("DEVICE_CREATE_ATTEMPT=" + std::to_string(attempt + 1) +
+             "/" + std::to_string(retries + 1));
+        rc = ftbl.deviceCreate(g.logger, nullptr, &g.device);
+        if (rc == QNN_SUCCESS && g.device) break;
+        error("DEVICE_CREATE_ATTEMPT_FAIL attempt=" + std::to_string(attempt + 1) +
+              " rc=" + std::to_string((int)rc) + " hex=" + rcHex(rc));
+        g.device = nullptr;
+        if (attempt < retries) usleep(50000);
+    }
     if (rc != QNN_SUCCESS || !g.device) {
         error("DEVICE_CREATE_FAILED: HTP runtime/device initialization did not complete");
         return fail("deviceCreate", rc);
@@ -406,10 +448,11 @@ bool smokeTest() {
     auto us = std::chrono::duration_cast<std::chrono::microseconds>(t1 - t0).count();
 
     info("GRAPH_EXECUTE_RETURN rc=" + std::to_string((int)rc) +
-         " elapsed_us=" + std::to_string(us));
+         " hex=" + rcHex(rc) + " elapsed_us=" + std::to_string(us));
 
     if (rc != QNN_SUCCESS) {
-        error("GRAPH_EXECUTE_FAIL rc=" + std::to_string((int)rc));
+        error("GRAPH_EXECUTE_FAIL rc=" + std::to_string((int)rc) +
+              " hex=" + rcHex(rc));
         return false;
     }
 
