@@ -2,6 +2,7 @@
 #include <dlfcn.h>
 #include <android/log.h>
 #include <cstdint>
+#include <cstdlib>
 #include <cstdio>
 #include <cstring>
 #include <string>
