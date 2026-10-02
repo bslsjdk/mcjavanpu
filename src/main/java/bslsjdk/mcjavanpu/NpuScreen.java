@@ -10,6 +10,7 @@ public final class NpuScreen extends Screen {
     private String status = "正在读取 NPU 状态…";
     private String detail = "";
     private int scroll = 0;
+    private volatile boolean closed;
 
     public NpuScreen() {
         super(Component.literal("MC Java NPU 设置"));
@@ -32,7 +33,7 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("上一页"), b -> { scroll = Math.max(0, scroll - 10); })
                 .bounds(cx - 205, y + 78, 100, 20).build());
 
-        addRenderableWidget(Button.builder(Component.literal("下一页"), b -> { scroll += 10; })
+        addRenderableWidget(Button.builder(Component.literal("下一页"), b -> { String[] lines = (detail == null ? "" : detail).split("\\R"); int maxLines = 13; scroll = Math.min(scroll + 10, Math.max(0, lines.length - maxLines)); })
                 .bounds(cx - 100, y + 78, 100, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("关闭"), b -> onClose())
@@ -44,7 +45,9 @@ public final class NpuScreen extends Screen {
     private void refresh() {
         new Thread(() -> {
             String s = NpuServiceClient.status();
+            if (closed) return;
             this.minecraft.execute(() -> {
+                if (closed) return; 
                 boolean available = s.startsWith("QNN HTP ready");
                 status = available ? "NPU：服务已连接" : "NPU：服务未连接";
                 detail = s;
@@ -56,7 +59,9 @@ public final class NpuScreen extends Screen {
     private void runTest() {
         new Thread(() -> {
             String r = NpuServiceClient.smoke();
+            if (closed) return;
             this.minecraft.execute(() -> {
+                if (closed) return; 
                 boolean ok = r.startsWith("OK ");
                 status = ok ? "NPU 测试：通过" : "NPU 测试：失败";
                 detail = r;
@@ -65,7 +70,15 @@ public final class NpuScreen extends Screen {
     }
 
     private void runBenchmark() {
-        runTest();
+        new Thread(() -> {
+            NpuRuntime.TestResult r = NpuRuntime.benchmark();
+            if (closed) return;
+            this.minecraft.execute(() -> {
+                if (closed) return;
+                status = r.success() ? "服务性能测试：通过" : "服务性能测试：失败";
+                detail = r.detail();
+            });
+        }, "mcnpu-benchmark").start();
     }
 
     @Override
@@ -92,6 +105,7 @@ public final class NpuScreen extends Screen {
 
     @Override
     public void onClose() {
+        closed = true;
         Minecraft.getInstance().gui.setScreen(null);
     }
 }
