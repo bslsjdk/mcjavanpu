@@ -26,7 +26,7 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("NPU 测试"), b -> runTest())
                 .bounds(cx - 100, y + 26, 200, 20).build());
 
-        addRenderableWidget(Button.builder(Component.literal("性能测试"), b -> runBenchmark())
+        addRenderableWidget(Button.builder(Component.literal("服务性能测试"), b -> runBenchmark())
                 .bounds(cx - 100, y + 52, 200, 20).build());
 
         addRenderableWidget(Button.builder(Component.literal("上一页"), b -> { scroll = Math.max(0, scroll - 10); })
