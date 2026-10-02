@@ -36,34 +36,4 @@ java {
     targetCompatibility = JavaVersion.VERSION_25
 }
 
-tasks.register("quickTestJar", Jar) {
-    group = "build"
-    description = "Builds a standalone executable MCJavaNPU diagnostic JAR."
-    dependsOn tasks.named("classes"), tasks.named("processResources")
-    archiveBaseName = "mcjavanpu-quicktest"
-    archiveVersion = ""
-    destinationDirectory = layout.buildDirectory.dir("quicktest")
 
-    from(sourceSets.main.output) {
-        include "bslsjdk/mcjavanpu/QuickTestMain.class"
-        include "bslsjdk/mcjavanpu/NpuRuntime*.class"
-        include "bslsjdk/mcjavanpu/NpuServiceClient*.class"
-    }
-
-    from(sourceSets.main.output.resourcesDir) {
-        include "natives/**"
-    }
-
-    manifest {
-        attributes("Main-Class": "bslsjdk.mcjavanpu.QuickTestMain")
-    }
-    duplicatesStrategy = DuplicatesStrategy.EXCLUDE
-}
-
-publishing {
-    publications {
-        create("mavenJava", MavenPublication) {
-            from components.java
-        }
-    }
-}
