@@ -1,7 +1,5 @@
 package bslsjdk.mcjavanpu;
 
-import net.fabricmc.loader.api.FabricLoader;
-
 import java.io.IOException;
 import java.io.InputStream;
 import java.nio.file.Files;
@@ -9,8 +7,9 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 /**
- * Extracts the bundled native library to Fabric's config directory and loads it.
- * Stage 0 targets Android/arm64-v8a; desktop fallback is intentionally unsupported.
+ * Extracts the bundled native library to the JVM's private temporary directory.
+ * Android/ZL2 does not allow the JVM linker namespace to load native libraries
+ * directly from shared external storage.
  */
 public final class NativeLoader {
     private static final String LIB_NAME = "libmcjavanpu.so";
@@ -26,18 +25,23 @@ public final class NativeLoader {
                 throw new IOException("native library not bundled: " + resource);
             }
 
-            Path dir = FabricLoader.getInstance().getConfigDir().resolve("mcjavanpu/native");
-            Files.createDirectories(dir);
-
-            Path target = dir.resolve(LIB_NAME);
-            Path temp = dir.resolve(LIB_NAME + ".tmp");
-
-            Files.copy(in, temp, StandardCopyOption.REPLACE_EXISTING);
-            try {
-                System.load(temp.toAbsolutePath().toString());
-            } finally {
-                Files.deleteIfExists(temp);
+            String tmpProperty = System.getProperty("java.io.tmpdir");
+            if (tmpProperty == null || tmpProperty.isBlank()) {
+                throw new IOException("java.io.tmpdir is unavailable");
             }
+
+            Path root = Path.of(tmpProperty).toAbsolutePath().normalize();
+            Files.createDirectories(root);
+
+            Path dir = Files.createTempDirectory(root, "mcjavanpu-");
+            Path target = dir.resolve(LIB_NAME);
+
+            Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
+
+            // Keep the file in the JVM-private directory for the lifetime of the
+            // process. This avoids Android linker namespace issues and makes the
+            // native path stable for debugging.
+            System.load(target.toString());
         }
     }
 
