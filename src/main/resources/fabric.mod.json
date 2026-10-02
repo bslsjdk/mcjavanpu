@@ -8,7 +8,8 @@
   "license": "MIT",
   "environment": "*",
   "entrypoints": {
-    "main": ["bslsjdk.mcjavanpu.McJavaNpu"]
+    "main": ["bslsjdk.mcjavanpu.McJavaNpu"],
+    "client": ["bslsjdk.mcjavanpu.McJavaNpuClient"]
   },
   "depends": {
     "fabricloader": ">=0.19.5",
