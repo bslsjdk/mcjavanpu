@@ -33,7 +33,7 @@ public final class McJavaNpu implements ModInitializer {
                             + " detail=" + result.detail()), false);
                     return result.success() ? 1 : 0;
                 }))
-                .then(Commands.literal("addtest").requires(s -> s.hasPermission(2)).executes(context -> {
+                .then(Commands.literal("addtest").requires(s -> s.getPlayer() != null && s.getPlayer().hasPermissions(2)).executes(context -> {
                     float[] a = new float[16], b = new float[16];
                     for (int i=0;i<16;i++) { a[i]=i; b[i]=2f; }
                     String result = NpuRuntime.add(a,b);
