@@ -186,7 +186,7 @@ bool preloadFastRpc() {
 
     if (g.rpcLibs.empty()) {
         error("FASTRPC_PRELOAD_NONE: libcdsprpc/libadsprpc are not visible in the app linker namespace");
-        error("ANDROID_MANIFEST_HINT: host APK must declare <uses-native-library android:name=\\"libcdsprpc.so\\" android:required=\\"false\\" />");
+        error("ANDROID_MANIFEST_HINT: host APK must declare libcdsprpc.so as an optional native library");
         return false;
     }
     return true;
