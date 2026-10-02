@@ -35,4 +35,20 @@ public final class NpuServiceClient {
     public static String smoke() {
         return request("SMOKE");
     }
+
+    public static String capabilities() {
+        return request("CAPABILITIES");
+    }
+
+    public static String add(float[] a, float[] b) {
+        if (a == null || b == null || a.length == 0 || a.length != b.length || a.length > 1024)
+            return "ERR ADD_SIZE";
+        StringBuilder sa = new StringBuilder(), sb = new StringBuilder();
+        for (int i=0;i<a.length;i++) {
+            if (i > 0) { sa.append(','); sb.append(','); }
+            sa.append(Float.toString(a[i]));
+            sb.append(Float.toString(b[i]));
+        }
+        return request("EXEC_ADD " + sa + "|" + sb);
+    }
 }
