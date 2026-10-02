@@ -163,45 +163,15 @@ bool loadRuntime() {
     info("ADSP_LIBRARY_PATH=" + adsp);
     info("LD_LIBRARY_PATH=" + ldPath);
 
-    // Load the bundled stack by absolute path. Dependency failures are logged
-    // individually; the final HTP load result decides whether initialization
-    // can continue.
-    // Do not dlopen the V73 Stub from the ARM64 app process. Its DT_NEEDED
-    // chain contains libcdsprpc.so, which Android's app linker namespace may
-    // reject even though QNN can resolve/use the DSP side through FastRPC.
-    // The known-good probe does not explicitly dlopen the stub either.
-    const char* deps[] = {
-        "libc++_shared.so",
-        "libQnnSystem.so",
-        "libQnnHtpPrepare.so"
-    };
-
-    for (const char* name : deps) {
-        const std::string path = libDir + "/" + name;
-        info(std::string("QNN_DEP_BEGIN path=") + path);
-        dlerror();
-        void* h = dlopen(path.c_str(), RTLD_NOW | RTLD_GLOBAL);
-        if (h) {
-            info(std::string("QNN_DEP_OK name=") + name);
-        } else {
-            const char* err = dlerror();
-            error(std::string("QNN_DEP_FAIL name=") + name +
-                  " error=" + (err ? err : "?"));
-        }
-    }
-
-    const std::string skelPath = libDir + "/libQnnHtpV73Skel.so";
-    {
-        std::ifstream skel(skelPath);
-        if (!skel.good()) {
-            error("HTP_V73_SKEL_MISSING path=" + skelPath);
-            g.error = "libQnnHtpV73Skel.so missing from runtime directory";
-            return false;
-        }
-        info("HTP_V73_SKEL_PRESENT path=" + skelPath);
-    }
-
+    // Match the known-good npu_probe runner exactly: do not eagerly dlopen
+    // QNN System/Prepare/Stub from the Android app linker namespace.  The probe
+    // reaches HTP with only the absolute libQnnHtp.so load plus the FastRPC paths.
+    // Extra host-side dlopen calls can create a different linker/symbol state on
+    // Android 16, so keep this path deliberately minimal.
     const std::string htpPath = libDir + "/libQnnHtp.so";
+    info("QNN_PROBE_COMPAT_MODE=exact_env_and_single_htp_dlopen");
+    info("QNN_PROBE_COMPAT_SKEL=" + libDir + "/libQnnHtpV73Skel.so");
+
     info("DLOPEN_BEGIN path=" + htpPath);
     dlerror();
     g.qnn = dlopen(htpPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
