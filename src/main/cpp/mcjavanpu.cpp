@@ -102,6 +102,9 @@ struct Runtime {
     bool ready = false;
 };
 Runtime g;
+int gConfiguredLogLevel = (int)QNN_LOG_LEVEL_DEBUG;
+int gConfiguredDeviceRetries = 0;
+std::string gConfiguredAdspExtra;
 
 using GetProvidersFn = Qnn_ErrorHandle_t (*)(const QnnInterface_t ***, uint32_t *);
 
@@ -166,8 +169,8 @@ bool loadRuntime() {
     info("QNN_LIB_DIR=" + libDir);
     info("ANDROID_API=" + std::to_string((int)__ANDROID_API__) +
          " ABI=arm64-v8a");
-    info("TUNING_LOG_LEVEL=" + std::to_string(envInt("MCJAVANPU_QNN_LOG_LEVEL", (int)QNN_LOG_LEVEL_DEBUG)));
-    info("TUNING_DEVICE_RETRIES=" + std::to_string(envInt("MCJAVANPU_DEVICE_RETRIES", 0)));
+    info("TUNING_LOG_LEVEL=" + std::to_string(gConfiguredLogLevel));
+    info("TUNING_DEVICE_RETRIES=" + std::to_string(gConfiguredDeviceRetries));
     info("TUNING_ADSP_EXTRA=" + envStr("MCJAVANPU_ADSP_EXTRA", "<none>"));
 
     // Same environment strategy as the proven npu_probe runner.
@@ -178,7 +181,7 @@ bool loadRuntime() {
     // ADSP_LIBRARY_PATH entries. This matches the known-good npu_probe runner.
     std::string adsp =
         libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
-    const std::string adspExtra = envStr("MCJAVANPU_ADSP_EXTRA");
+    const std::string adspExtra = gConfiguredAdspExtra;
     if (!adspExtra.empty()) adsp += ";" + adspExtra;
     const std::string ldPath =
         libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
@@ -497,6 +500,44 @@ void shutdownRuntime() {
     g.iface = nullptr;
     info("SHUTDOWN_DONE");
 }
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_bslsjdk_mcjavanpu_NpuRuntime_nativeConfigure(JNIEnv* env, jclass, jstring jtuning) {
+    if (!jtuning) return;
+    const char* raw = env->GetStringUTFChars(jtuning, nullptr);
+    if (!raw) return;
+    std::string cfg(raw);
+    env->ReleaseStringUTFChars(jtuning, raw);
+
+    auto get = [&](const char* key) -> std::string {
+        std::string k = std::string(key) + "=";
+        size_t p = cfg.find(k);
+        if (p == std::string::npos) return "";
+        p += k.size();
+        size_t e = cfg.find(';', p);
+        return cfg.substr(p, e == std::string::npos ? cfg.size() - p : e - p);
+    };
+
+    std::string level = get("logLevel");
+    if (level == "ERROR") gConfiguredLogLevel = (int)QNN_LOG_LEVEL_ERROR;
+    else if (level == "WARN") gConfiguredLogLevel = (int)QNN_LOG_LEVEL_WARN;
+    else if (level == "INFO") gConfiguredLogLevel = (int)QNN_LOG_LEVEL_INFO;
+    else if (level == "VERBOSE") gConfiguredLogLevel = (int)QNN_LOG_LEVEL_VERBOSE;
+    else gConfiguredLogLevel = (int)QNN_LOG_LEVEL_DEBUG;
+
+    std::string retries = get("deviceRetries");
+    if (!retries.empty()) {
+        gConfiguredDeviceRetries = std::max(0, std::atoi(retries.c_str()));
+        if (gConfiguredDeviceRetries > 3) gConfiguredDeviceRetries = 3;
+    }
+
+    gConfiguredAdspExtra = get("adspExtra");
+    if (gConfiguredAdspExtra == "<none>") gConfiguredAdspExtra.clear();
+
+    info("NATIVE_TUNING_APPLIED logLevel=" + std::to_string(gConfiguredLogLevel) +
+         " deviceRetries=" + std::to_string(gConfiguredDeviceRetries) +
+         " adspExtra=" + (gConfiguredAdspExtra.empty() ? "<none>" : gConfiguredAdspExtra));
 }
 
 extern "C" JNIEXPORT jboolean JNICALL
