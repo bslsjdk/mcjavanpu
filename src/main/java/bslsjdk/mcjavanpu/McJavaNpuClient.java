@@ -12,7 +12,8 @@ public final class McJavaNpuClient implements ClientModInitializer {
     @Override
     public void onInitializeClient() {
         // MCNPU is a separate Android service. Do not load QNN inside Minecraft.
-        System.out.println("[MCJavaNPU] external MCNPU service: " + NpuServiceClient.status());
+        Thread.ofVirtual().name("mcjavanpu-client-init").start(() ->
+                System.out.println("[MCJavaNPU] external MCNPU service: " + NpuServiceClient.status()));
 
         KeyMapping.Category category = KeyMapping.Category.register(
                 net.minecraft.resources.Identifier.fromNamespaceAndPath("mcjavanpu", "npu")
