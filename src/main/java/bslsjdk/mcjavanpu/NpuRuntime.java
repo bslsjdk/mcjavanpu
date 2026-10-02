@@ -1,6 +1,6 @@
 package bslsjdk.mcjavanpu;
 
-/** Java-side contract for the native QNN/HTP runtime. */
+/** Stable Java-side inference facade. */
 public final class NpuRuntime {
     private static volatile boolean initialized;
     private static volatile boolean available;
@@ -10,8 +10,11 @@ public final class NpuRuntime {
     private NpuRuntime() {}
 
     public static synchronized void init() {
-        if (initialized && available) return;
+        HtpBackend.getInstance().initialize();
+    }
 
+    static synchronized boolean initInternal() {
+        if (initialized && available) return true;
         try {
             NativeLoader.load();
             System.out.println("[MCJavaNPU] native diagnostic log=" + nativeGetLogPath());
@@ -19,23 +22,22 @@ public final class NpuRuntime {
             loadError = available ? "" : nativeGetDeviceInfo();
             try {
                 diagnostics = nativeGetDiagnostics();
-            } catch (UnsatisfiedLinkError missingDiagnostics) {
-                // Keep the real nativeInit/deviceCreate failure visible when an
-                // externally supplied older .so predates nativeGetDiagnostics().
-                diagnostics = "NATIVE_DIAGNOSTICS_UNAVAILABLE " + missingDiagnostics + "\n";
-                System.err.println("[MCJavaNPU] diagnostics JNI missing; preserving native init result: " + missingDiagnostics);
+            } catch (UnsatisfiedLinkError e) {
+                diagnostics = "NATIVE_DIAGNOSTICS_UNAVAILABLE " + e + "\n";
+                System.err.println("[MCJavaNPU] diagnostics JNI missing: " + e);
             }
             System.out.println("[MCJavaNPU] NPU_INIT_RESULT available=" + available);
             System.out.println("[MCJavaNPU] NPU_DEVICE_INFO=" + loadError);
-            System.out.println("[MCJavaNPU] NPU_DIAGNOSTICS_BEGIN\n" + diagnostics + "[MCJavaNPU] NPU_DIAGNOSTICS_END");
+            System.out.println("[MCJavaNPU] NPU_DIAGNOSTICS_BEGIN\n" + diagnostics
+                    + "[MCJavaNPU] NPU_DIAGNOSTICS_END");
         } catch (Throwable error) {
             available = false;
             loadError = error.toString();
             diagnostics = "JAVA_INIT_EXCEPTION " + error + "\n";
             System.err.println("[MCJavaNPU] native runtime unavailable: " + error);
         }
-
         initialized = true;
+        return available;
     }
 
     public static boolean isInitialized() { return initialized; }
@@ -43,15 +45,14 @@ public final class NpuRuntime {
     public static String getLoadError() { return loadError; }
     public static String getDiagnostics() { return diagnostics; }
 
-    public static String getDeviceInfo() {
-        return nativeGetDeviceInfo();
-    }
-
-    public static String getLogPath() {
-        return nativeGetLogPath();
-    }
+    public static String getDeviceInfo() { return nativeGetDeviceInfo(); }
+    public static String getLogPath() { return nativeGetLogPath(); }
 
     public static TestResult test() {
+        return testInternal();
+    }
+
+    static TestResult testInternal() {
         if (!available) return TestResult.failure("UNAVAILABLE", loadError);
         try {
             return nativeTest()
@@ -72,11 +73,14 @@ public final class NpuRuntime {
     }
 
     public static synchronized void shutdown() {
+        HtpBackend.getInstance().close();
+    }
+
+    static synchronized void shutdownInternal() {
         if (!initialized) return;
         if (available) {
-            try {
-                nativeShutdown();
-            } catch (Throwable error) {
+            try { nativeShutdown(); }
+            catch (Throwable error) {
                 System.err.println("[MCJavaNPU] native shutdown failed: " + error);
             }
         }
@@ -88,7 +92,6 @@ public final class NpuRuntime {
         static TestResult success(String name, String detail) {
             return new TestResult(true, name, detail);
         }
-
         static TestResult failure(String name, String detail) {
             return new TestResult(false, name, detail);
         }
