@@ -35,7 +35,7 @@ jobs:
       - name: Build Fabric mod
         run: gradle build --no-daemon
 
-      - name: Upload mod and QuickTest JAR
+      - name: Upload mod
         uses: actions/upload-artifact@v4
         with:
           name: mcjavanpu
