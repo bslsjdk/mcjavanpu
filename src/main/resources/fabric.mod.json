@@ -4,17 +4,26 @@
   "version": "${version}",
   "name": "MC Java NPU",
   "description": "Minecraft Java Fabric NPU runtime and acceleration bridge.",
-  "authors": ["bslsjdk"],
+  "authors": [
+    "bslsjdk"
+  ],
   "license": "MIT",
   "environment": "*",
   "entrypoints": {
-    "main": ["bslsjdk.mcjavanpu.McJavaNpu"],
-    "client": ["bslsjdk.mcjavanpu.McJavaNpuClient"]
+    "main": [
+      "bslsjdk.mcjavanpu.McJavaNpu"
+    ],
+    "client": [
+      "bslsjdk.mcjavanpu.McJavaNpuClient"
+    ]
   },
   "depends": {
     "fabricloader": ">=0.19.5",
     "minecraft": "~26.3",
     "java": ">=25",
     "fabric-api": "*"
-  }
+  },
+  "mixins": [
+    "mcjavanpu.mixins.json"
+  ]
 }
