@@ -31,11 +31,20 @@ struct Runtime {
     Qnn_DeviceHandle_t device = nullptr;
     Qnn_ContextHandle_t context = nullptr;
     std::string info;
+    std::string error;
     bool ready = false;
 };
 Runtime g;
 
 using GetProvidersFn = Qnn_ErrorHandle_t (*)(const QnnInterface_t ***, uint32_t *);
+
+bool fail(const char* stage, Qnn_ErrorHandle_t rc) {
+    char buf[256];
+    std::snprintf(buf, sizeof(buf), "%s rc=%d", stage, (int)rc);
+    g.error = buf;
+    LOGE("%s", g.error.c_str());
+    return false;
+}
 
 bool loadRuntime() {
     const char* paths[] = {
@@ -52,16 +61,21 @@ bool loadRuntime() {
         const char* err = dlerror();
         LOGE("QNN load failed: %s (%s)", path, err ? err : "?");
     }
+    g.error = "dlopen(libQnnHtp.so) failed";
     return false;
 }
 
 bool initQnn() {
+    g.error.clear();
+    g.info.clear();
+
     if (!loadRuntime()) return false;
 
     auto getProviders =
         reinterpret_cast<GetProvidersFn>(dlsym(g.qnn, "QnnInterface_getProviders"));
     if (!getProviders) {
-        LOGE("QnnInterface_getProviders missing");
+        g.error = "dlsym QnnInterface_getProviders failed";
+        LOGE("%s", g.error.c_str());
         return false;
     }
 
@@ -69,8 +83,7 @@ bool initQnn() {
     uint32_t count = 0;
     Qnn_ErrorHandle_t rc = getProviders(&providers, &count);
     if (rc != QNN_SUCCESS || !providers || count == 0) {
-        LOGE("getProviders failed rc=%d count=%u", (int)rc, count);
-        return false;
+        return fail("getProviders", rc);
     }
 
     for (uint32_t i = 0; i < count; ++i) {
@@ -79,35 +92,41 @@ bool initQnn() {
             break;
         }
     }
-    if (!g.iface) g.iface = providers[0];
+    if (!g.iface) {
+        g.iface = providers[0];
+        LOGI("HTP provider id=%d not found; using provider[0] id=%d",
+             BACKEND_ID_HTP, (int)g.iface->backendId);
+    } else {
+        LOGI("selected HTP provider id=%d", (int)g.iface->backendId);
+    }
 
     const auto& ftbl = g.iface->QNN_INTERFACE_VER_NAME;
 
     if (ftbl.logCreate) {
         rc = ftbl.logCreate(nullptr, QNN_LOG_LEVEL_ERROR, &g.logger);
         if (rc != QNN_SUCCESS) {
-            LOGI("logCreate rc=%d", (int)rc);
+            LOGI("logCreate rc=%d; continuing without logger", (int)rc);
             g.logger = nullptr;
         }
     }
 
     rc = ftbl.backendCreate(g.logger, nullptr, &g.backend);
     if (rc != QNN_SUCCESS || !g.backend) {
-        LOGE("backendCreate rc=%d", (int)rc);
-        return false;
+        return fail("backendCreate", rc);
     }
+    LOGI("backendCreate OK");
 
     rc = ftbl.deviceCreate(g.logger, nullptr, &g.device);
     if (rc != QNN_SUCCESS || !g.device) {
-        LOGE("deviceCreate rc=%d", (int)rc);
-        return false;
+        return fail("deviceCreate", rc);
     }
+    LOGI("deviceCreate OK");
 
     rc = ftbl.contextCreate(g.backend, g.device, nullptr, &g.context);
     if (rc != QNN_SUCCESS || !g.context) {
-        LOGE("contextCreate rc=%d", (int)rc);
-        return false;
+        return fail("contextCreate", rc);
     }
+    LOGI("contextCreate OK");
 
     char buf[256];
     std::snprintf(buf, sizeof(buf),
@@ -153,12 +172,9 @@ bool smokeTest() {
         return false;
     }
 
-    Qnn_Tensor_t a = makeTensor("a", QNN_TENSOR_TYPE_APP_WRITE,
-                                QNN_DATATYPE_FLOAT_32, dims, 1);
-    Qnn_Tensor_t b = makeTensor("b", QNN_TENSOR_TYPE_APP_WRITE,
-                                QNN_DATATYPE_FLOAT_32, dims, 1);
-    Qnn_Tensor_t c = makeTensor("c", QNN_TENSOR_TYPE_APP_READ,
-                                QNN_DATATYPE_FLOAT_32, dims, 1);
+    Qnn_Tensor_t a = makeTensor("a", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_32, dims, 1);
+    Qnn_Tensor_t b = makeTensor("b", QNN_TENSOR_TYPE_APP_WRITE, QNN_DATATYPE_FLOAT_32, dims, 1);
+    Qnn_Tensor_t c = makeTensor("c", QNN_TENSOR_TYPE_APP_READ, QNN_DATATYPE_FLOAT_32, dims, 1);
 
     rc = ftbl.tensorCreateGraphTensor(graph, &a);
     if (rc == QNN_SUCCESS) rc = ftbl.tensorCreateGraphTensor(graph, &b);
@@ -265,6 +281,7 @@ Java_bslsjdk_mcjavanpu_NpuRuntime_nativeInit(JNIEnv*, jclass) {
 
 extern "C" JNIEXPORT jstring JNICALL
 Java_bslsjdk_mcjavanpu_NpuRuntime_nativeGetDeviceInfo(JNIEnv* env, jclass) {
+    if (!g.error.empty()) return env->NewStringUTF(g.error.c_str());
     return env->NewStringUTF(g.info.empty() ? "unknown" : g.info.c_str());
 }
 
