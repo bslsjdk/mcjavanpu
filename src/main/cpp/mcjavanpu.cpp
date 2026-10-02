@@ -11,6 +11,8 @@
 #include <chrono>
 #include <ctime>
 #include <filesystem>
+#include <unistd.h>
+#include <cerrno>
 
 #include "QnnInterface.h"
 #include "QnnLog.h"
@@ -29,7 +31,9 @@
 
 namespace {
 std::ofstream gLog;
+std::string gTrace;
 const char* kLogPath = "logs/mcjavanpu-npu.log";
+const size_t kMaxTrace = 48000;
 
 void ensureLog() {
     if (gLog.is_open()) return;
@@ -41,6 +45,8 @@ void ensureLog() {
 }
 
 void logLine(const char* level, const std::string& msg) {
+    gTrace += std::string("[") + level + "] " + msg + "\n";
+    if (gTrace.size() > kMaxTrace) gTrace.erase(0, gTrace.size() - kMaxTrace);
     ensureLog();
     if (gLog.is_open()) {
         auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
@@ -203,6 +209,10 @@ bool initQnn() {
     g.error.clear();
     g.infoText.clear();
     stage("INIT_BEGIN");
+    info("PID=" + std::to_string((long long)getpid()));
+    char cwd[1024]{};
+    if (getcwd(cwd, sizeof(cwd))) info(std::string("CWD=") + cwd);
+    else error(std::string("GETCWD_FAIL errno=") + std::to_string(errno));
 
     if (!loadRuntime()) return false;
 
@@ -449,6 +459,11 @@ extern "C" JNIEXPORT jstring JNICALL
 Java_bslsjdk_mcjavanpu_NpuRuntime_nativeGetDeviceInfo(JNIEnv* env, jclass) {
     if (!g.error.empty()) return env->NewStringUTF(g.error.c_str());
     return env->NewStringUTF(g.infoText.empty() ? "unknown" : g.infoText.c_str());
+}
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_bslsjdk_mcjavanpu_NpuRuntime_nativeGetDiagnostics(JNIEnv* env, jclass) {
+    return env->NewStringUTF(gTrace.empty() ? "NO_NATIVE_TRACE" : gTrace.c_str());
 }
 
 extern "C" JNIEXPORT jstring JNICALL
