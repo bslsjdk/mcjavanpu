@@ -6,11 +6,20 @@ public final class NpuRuntime {
     private static volatile boolean available;
     private static volatile String loadError = "service not checked";
     private static volatile String diagnostics = "";
-    private static final String tuning = "transport=local-abstract-socket;persistent=true;socket=mcnpu_ipc_v1;backend=HTP_V73";
 
     private NpuRuntime() {}
 
-    public static synchronized void init() { HtpBackend.getInstance().initialize(); }
+    public static synchronized void init() {
+        try {
+            HtpBackend.getInstance().initialize();
+        } catch (Throwable error) {
+            initialized = true;
+            available = false;
+            loadError = "INIT_EXCEPTION " + error.getClass().getSimpleName() + ": " + error.getMessage();
+            diagnostics = "MCNPU_INIT_EXCEPTION " + loadError;
+            System.err.println("[MCJavaNPU] " + diagnostics);
+        }
+    }
 
     static synchronized boolean initInternal() {
         String ping = NpuServiceClient.request("PING");
@@ -33,7 +42,6 @@ public final class NpuRuntime {
     public static boolean isAvailable(){return available && NpuServiceClient.isAvailable();}
     public static String getLoadError(){return loadError;}
     public static String getDiagnostics(){return diagnostics;}
-    public static String getTuning(){return tuning;}
 
     public static String getDeviceInfo(){
         String status=NpuServiceClient.status();
