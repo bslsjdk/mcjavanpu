@@ -98,6 +98,7 @@ struct Runtime {
     Qnn_BackendHandle_t backend = nullptr;
     Qnn_DeviceHandle_t device = nullptr;
     Qnn_ContextHandle_t context = nullptr;
+    std::vector<void*> rpcLibs;
     std::string infoText;
     std::string error;
     bool ready = false;
@@ -145,14 +146,55 @@ void qnnLogCallback(const char* fmt, QnnLog_Level_t level, uint64_t, va_list arg
     logLine(levelName, buf);
 }
 
+bool preloadFastRpc() {
+    stage("FASTRPC_PRELOAD_BEGIN");
+
+    const char* candidates[] = {
+        "/vendor/lib64/libcdsprpc.so",
+        "/vendor/lib64/libadsprpc.so",
+        "libcdsprpc.so",
+        "libadsprpc.so"
+    };
+
+    for (const char* path : candidates) {
+        // Avoid loading the same library twice through both absolute and soname
+        // forms. Keep successful handles alive for the whole QNN session.
+        bool already = false;
+        for (void* h : g.rpcLibs) {
+            (void)h;
+            // Android's linker coalesces identical SONAMEs, so duplicate loads
+            // are harmless; retaining one successful handle is sufficient.
+        }
+
+        dlerror();
+        void* h = dlopen(path, RTLD_NOW | RTLD_GLOBAL);
+        const char* err = dlerror();
+        if (h) {
+            g.rpcLibs.push_back(h);
+            info(std::string("FASTRPC_PRELOAD_OK path=") + path);
+            if (std::string(path).find("libcdsprpc") != std::string::npos) {
+                // libcdsprpc is the critical public vendor library for the HTP
+                // transport. Once this is visible, the QNN V73 stub can resolve
+                // its transport dependency in the same app process.
+                info("FASTRPC_CDSPRCP_VISIBLE=1");
+            }
+        } else {
+            info(std::string("FASTRPC_PRELOAD_FAIL path=") + path +
+                 " error=" + (err ? err : "?"));
+        }
+    }
+
+    if (g.rpcLibs.empty()) {
+        error("FASTRPC_PRELOAD_NONE: libcdsprpc/libadsprpc are not visible in the app linker namespace");
+        error("ANDROID_MANIFEST_HINT: host APK must declare <uses-native-library android:name=\\"libcdsprpc.so\\" android:required=\\"false\\" />");
+        return false;
+    }
+    return true;
+}
+
 bool loadRuntime() {
     stage("QNN_LOAD_BEGIN");
 
-    // The Minecraft JVM is launched by FCL/ZL2, so its linker namespace does
-    // not necessarily search the plugin APK's nativeLibraryDir by soname.
-    // npu_probe solved the same class of problem by using an app-owned
-    // directory + absolute dlopen paths. Here we derive the directory of
-    // this already-loaded library and use absolute sibling paths.
     Dl_info selfInfo{};
     std::string libDir;
     if (dladdr(reinterpret_cast<void*>(&loadRuntime), &selfInfo) && selfInfo.dli_fname) {
@@ -174,12 +216,6 @@ bool loadRuntime() {
     info("TUNING_DEVICE_RETRIES=" + std::to_string(gConfiguredDeviceRetries));
     info("TUNING_ADSP_EXTRA=" + envStr("MCJAVANPU_ADSP_EXTRA", "<none>"));
 
-    // Same environment strategy as the proven npu_probe runner.
-    // FastRPC/HTP uses colon-separated search paths.  The V73 Skel is a
-    // DSP-side image: it must be discoverable through ADSP_LIBRARY_PATH, not
-    // dlopen'ed into the ARM64 host process.
-    // FastRPC on this Android 16/HTP V73 stack uses semicolon-separated
-    // ADSP_LIBRARY_PATH entries. This matches the known-good npu_probe runner.
     std::string adsp =
         libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
     const std::string adspExtra = gConfiguredAdspExtra;
@@ -188,8 +224,7 @@ bool loadRuntime() {
         libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
     setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
-    // npu_probe explicitly chdir()s into its private work directory before
-    // loading QNN. Reproduce that behavior instead of inheriting ZL2/FCL CWD.
+
     if (chdir(libDir.c_str()) != 0) {
         error("CHDIR_WORKDIR_FAIL errno=" + std::to_string(errno) + " path=" + libDir);
         return false;
@@ -198,16 +233,15 @@ bool loadRuntime() {
     if (getcwd(cwdAfter, sizeof(cwdAfter))) info(std::string("CWD_AFTER=") + cwdAfter);
     info("ADSP_LIBRARY_PATH=" + adsp);
     info("LD_LIBRARY_PATH=" + ldPath);
-
-    // Match the known-good npu_probe runner exactly: do not eagerly dlopen
-    // QNN System/Prepare/Stub from the Android app linker namespace.  The probe
-    // reaches HTP with only the absolute libQnnHtp.so load plus the FastRPC paths.
-    // Extra host-side dlopen calls can create a different linker/symbol state on
-    // Android 16, so keep this path deliberately minimal.
-    const std::string htpPath = libDir + "/libQnnHtp.so";
-    info("QNN_PROBE_COMPAT_MODE=exact_env_and_single_htp_dlopen");
     info("QNN_PROBE_COMPAT_SKEL=" + libDir + "/libQnnHtpV73Skel.so");
 
+    // This is the important Android-app difference from the standalone probe:
+    // QNN's HTP stub depends on the FastRPC vendor client. Load it before the
+    // stub/backend is touched so the linker has the transport library available.
+    preloadFastRpc();
+
+    const std::string htpPath = libDir + "/libQnnHtp.so";
+    info("QNN_PROBE_COMPAT_MODE=exact_env_and_single_htp_dlopen");
     info("DLOPEN_BEGIN path=" + htpPath);
     dlerror();
     g.qnn = dlopen(htpPath.c_str(), RTLD_NOW | RTLD_GLOBAL);
@@ -220,8 +254,6 @@ bool loadRuntime() {
     error(std::string("QNN_LOAD_FAIL path=") + htpPath +
           " error=" + (err ? err : "?"));
 
-    // Keep vendor fallback for diagnostics. Android 16 may reject this path
-    // from the app namespace, but the exact linker error is useful evidence.
     const char* vendorPaths[] = {
         "/odm/lib64/aiframe/libQnnHtp.so",
         "/odm/lib64/libQnnHtp.so"
@@ -284,8 +316,6 @@ bool initQnn() {
         }
     }
 
-    // Never silently fall back to CPU.  A successful test is only meaningful
-    // if the HTP provider was actually selected.
     if (!g.iface) {
         g.error = "HTP provider (backendId=6) not found; refusing CPU fallback";
         error(g.error);
@@ -507,6 +537,12 @@ void shutdownRuntime() {
     if (g.qnn) dlclose(g.qnn);
     g.qnn = nullptr;
     g.iface = nullptr;
+
+    for (void* h : g.rpcLibs) {
+        if (h) dlclose(h);
+    }
+    g.rpcLibs.clear();
+
     info("SHUTDOWN_DONE");
 }
 }
