@@ -30,7 +30,7 @@ public final class NpuServiceClient {
             String line = in.readLine();
             if (line == null) throw new EOFException("service closed IPC");
             return line;
-        } catch (Throwable first) {
+        } catch (IOException first) {
             close();
             try {
                 connect();
@@ -39,7 +39,7 @@ public final class NpuServiceClient {
                 out.flush();
                 String line = in.readLine();
                 return line == null ? "ERR EMPTY_REPLY" : line;
-            } catch (Throwable second) {
+            } catch (IOException second) {
                 close();
                 return "ERR SERVICE_UNAVAILABLE " + second.getClass().getSimpleName();
             }
@@ -63,6 +63,7 @@ public final class NpuServiceClient {
             return "ERR ADD_SIZE";
         StringBuilder sa = new StringBuilder(), sb = new StringBuilder();
         for (int i=0;i<a.length;i++) {
+            if (!Float.isFinite(a[i]) || !Float.isFinite(b[i])) return "ERR ADD_NON_FINITE";
             if (i > 0) { sa.append(','); sb.append(','); }
             sa.append(Float.toString(a[i]));
             sb.append(Float.toString(b[i]));
