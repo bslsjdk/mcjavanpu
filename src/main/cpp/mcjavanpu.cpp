@@ -220,8 +220,11 @@ bool loadRuntime() {
         libDir + ";/vendor/dsp/cdsp;/vendor/lib/rfsa/adsp;/system/lib/rfsa/adsp;/dsp";
     const std::string adspExtra = gConfiguredAdspExtra;
     if (!adspExtra.empty()) adsp += ";" + adspExtra;
-    const std::string ldPath =
-        libDir + ":/vendor/dsp/cdsp:/vendor/lib64/";
+    // Android app processes already have a linker namespace and a launcher-provided
+    // LD_LIBRARY_PATH. Do not inject /vendor/lib64 here: on some Android 16/FastRPC
+    // stacks that changes HAL lookup and can turn a working transport into 14001.
+    // Keep only our private QNN directory plus the DSP directory used by the probe.
+    const std::string ldPath = libDir + ":/vendor/dsp/cdsp";
     setenv("ADSP_LIBRARY_PATH", adsp.c_str(), 1);
     setenv("LD_LIBRARY_PATH", ldPath.c_str(), 1);
 
@@ -238,7 +241,12 @@ bool loadRuntime() {
     // This is the important Android-app difference from the standalone probe:
     // QNN's HTP stub depends on the FastRPC vendor client. Load it before the
     // stub/backend is touched so the linker has the transport library available.
-    preloadFastRpc();
+    const bool fastRpcVisible = preloadFastRpc();
+    info(std::string("FASTRPC_LIBRARY_VISIBLE=") + (fastRpcVisible ? "1" : "0"));
+    if (!fastRpcVisible) {
+        error("FASTRPC_LIBRARY_NOT_VISIBLE: refusing HTP initialization until host linker namespace exposes libcdsprpc.so");
+        return false;
+    }
 
     const std::string htpPath = libDir + "/libQnnHtp.so";
     info("QNN_PROBE_COMPAT_MODE=exact_env_and_single_htp_dlopen");
