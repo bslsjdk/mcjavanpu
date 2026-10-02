@@ -3,7 +3,8 @@
   "package": "bslsjdk.mcjavanpu.mixin",
   "compatibilityLevel": "JAVA_25",
   "client": [
-    "PauseScreenMixin"
+    "PauseScreenMixin",
+    "ScreenAccessor"
   ],
   "injectors": {
     "defaultRequire": 1
