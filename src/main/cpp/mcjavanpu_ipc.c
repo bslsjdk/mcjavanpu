@@ -1,13 +1,13 @@
 #include <jni.h>
-#include <sys/socket.h>\n#include <netinet/in.h>\n#include <arpa/inet.h>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
 #include <unistd.h>
 #include <errno.h>
 #include <string.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <stddef.h>
-
-static const char *SOCKET_NAME = "mcnpu_ipc_v1";
 
 static jstring make_error(JNIEnv *env, const char *prefix) {
     char buf[256];
