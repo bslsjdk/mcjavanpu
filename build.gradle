@@ -36,10 +36,23 @@ java {
 tasks.register("quickTestJar", Jar) {
     group = "build"
     description = "Builds a standalone executable MCJavaNPU diagnostic JAR."
-    dependsOn tasks.named("classes")
+    dependsOn tasks.named("classes"), tasks.named("processResources")
     archiveBaseName = "mcjavanpu-quicktest"
+    archiveVersion = ""
     destinationDirectory = layout.buildDirectory.dir("quicktest")
-    from sourceSets.main.output
+
+    from(sourceSets.main.output) {
+        include "bslsjdk/mcjavanpu/QuickTestMain.class"
+        include "bslsjdk/mcjavanpu/NpuRuntime*.class"
+        include "bslsjdk/mcjavanpu/NativeLoader*.class"
+        include "bslsjdk/mcjavanpu/NpuBackend*.class"
+        include "bslsjdk/mcjavanpu/HtpBackend*.class"
+    }
+
+    from(sourceSets.main.output.resourcesDir) {
+        include "natives/**"
+    }
+
     manifest {
         attributes("Main-Class": "bslsjdk.mcjavanpu.QuickTestMain")
     }
