@@ -13,7 +13,7 @@ base {
 dependencies {
     minecraft "com.mojang:minecraft:${project.minecraft_version}"
     implementation "net.fabricmc:fabric-loader:${project.loader_version}"
-    implementation "net.fabricmc:fabric-api:${project.fabric_api_version}"
+    implementation "net.fabricmc.fabric-api:fabric-api:${project.fabric_api_version}"
 }
 
 processResources {
@@ -23,8 +23,6 @@ processResources {
     }
 }
 
-// Minecraft 26.3 requires Java 25.
-// Keep the mod and diagnostic JAR on the same runtime as the current game.
 tasks.withType(JavaCompile).configureEach {
     options.release = 25
 }
