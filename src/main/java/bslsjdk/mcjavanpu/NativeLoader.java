@@ -7,16 +7,32 @@ import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
 
 /**
- * Extracts the bundled native library to the JVM's private temporary directory.
- * Android/ZL2 does not allow the JVM linker namespace to load native libraries
- * directly from shared external storage.
+ * Loads the native runtime supplied by the ZL2/FCL NativeLibPlugin when present.
+ * Falls back to the bundled library for standalone use.
  */
 public final class NativeLoader {
     private static final String LIB_NAME = "libmcjavanpu.so";
+    private static final String PLUGIN_PATH_PROPERTY = "mcjavanpu.native";
 
     private NativeLoader() {}
 
     public static void load() throws IOException {
+        String pluginPath = System.getProperty(PLUGIN_PATH_PROPERTY);
+        if (pluginPath != null && !pluginPath.isBlank()) {
+            Path path = Path.of(pluginPath).toAbsolutePath().normalize();
+            if (!Files.isRegularFile(path)) {
+                throw new IOException("plugin native library not found: " + path);
+            }
+
+            System.out.println("[MCJavaNPU] native source=FCLNativePlugin path=" + path);
+            System.load(path.toString());
+            return;
+        }
+
+        loadBundled();
+    }
+
+    private static void loadBundled() throws IOException {
         String arch = normalizeArch(System.getProperty("os.arch", ""));
         String resource = "/natives/" + arch + "/" + LIB_NAME;
 
@@ -38,9 +54,7 @@ public final class NativeLoader {
 
             Files.copy(in, target, StandardCopyOption.REPLACE_EXISTING);
 
-            // Keep the file in the JVM-private directory for the lifetime of the
-            // process. This avoids Android linker namespace issues and makes the
-            // native path stable for debugging.
+            System.out.println("[MCJavaNPU] native source=bundled path=" + target);
             System.load(target.toString());
         }
     }
