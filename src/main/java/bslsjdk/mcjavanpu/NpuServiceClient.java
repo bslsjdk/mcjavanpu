@@ -2,7 +2,9 @@ package bslsjdk.mcjavanpu;
 
 import android.net.LocalSocket;
 import android.net.LocalSocketAddress;
+import android.os.Process;
 import java.io.*;
+import java.lang.reflect.Method;
 
 public final class NpuServiceClient {
     private static final String SOCKET_NAME = "mcnpu_ipc_v1";
@@ -17,8 +19,32 @@ public final class NpuServiceClient {
         socket = new LocalSocket();
         socket.connect(new LocalSocketAddress(SOCKET_NAME, LocalSocketAddress.Namespace.ABSTRACT));
         socket.setSoTimeout(3000);
+        verifyPeer();
         out = new BufferedWriter(new OutputStreamWriter(socket.getOutputStream(), java.nio.charset.StandardCharsets.UTF_8));
         in = new BufferedReader(new InputStreamReader(socket.getInputStream(), java.nio.charset.StandardCharsets.UTF_8));
+    }
+
+    private static void verifyPeer() throws IOException {
+        try {
+            android.net.Credentials peer = socket.getPeerCredentials();
+            int actualUid = peer.getUid();
+            Class<?> activityThread = Class.forName("android.app.ActivityThread");
+            Method currentApplication = activityThread.getMethod("currentApplication");
+            Object app = currentApplication.invoke(null);
+            if (!(app instanceof android.app.Application)) {
+                throw new IOException("cannot resolve Android application context");
+            }
+            android.content.pm.ApplicationInfo info =
+                    ((android.app.Application) app).getPackageManager()
+                            .getApplicationInfo("bslsjdk.mcnpu", 0);
+            if (actualUid != info.uid) {
+                throw new IOException("unexpected MCNPU peer uid=" + actualUid + " expected=" + info.uid);
+            }
+        } catch (IOException e) {
+            throw e;
+        } catch (Throwable e) {
+            throw new IOException("MCNPU peer verification failed: " + e.getClass().getSimpleName(), e);
+        }
     }
 
     public static synchronized String request(String command) {
@@ -29,6 +55,10 @@ public final class NpuServiceClient {
             out.flush();
             String line = in.readLine();
             if (line == null) throw new EOFException("service closed IPC");
+            if (command.equals("PING") && !line.startsWith("PONG MCNPU/")) {
+                close();
+                return "ERR INVALID_SERVICE_REPLY";
+            }
             return line;
         } catch (IOException first) {
             close();
@@ -38,7 +68,10 @@ public final class NpuServiceClient {
                 out.write("\n");
                 out.flush();
                 String line = in.readLine();
-                return line == null ? "ERR EMPTY_REPLY" : line;
+                if (line == null) return "ERR EMPTY_REPLY";
+                if (command.equals("PING") && !line.startsWith("PONG MCNPU/"))
+                    return "ERR INVALID_SERVICE_REPLY";
+                return line;
             } catch (IOException second) {
                 close();
                 return "ERR SERVICE_UNAVAILABLE " + second.getClass().getSimpleName();
