@@ -33,14 +33,14 @@ public final class McJavaNpu implements ModInitializer {
                             + " detail=" + result.detail()), false);
                     return result.success() ? 1 : 0;
                 }))
-                .then(Commands.literal("addtest").requires(s -> s.getPlayer() != null && s.getPlayer().hasPermissions(2)).executes(context -> {
+                .then(Commands.literal("addtest").requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)).executes(context -> {
                     float[] a = new float[16], b = new float[16];
                     for (int i=0;i<16;i++) { a[i]=i; b[i]=2f; }
                     String result = NpuRuntime.add(a,b);
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] addtest=" + result), false);
                     return result.startsWith("OK HTP_GRAPH_EXECUTE") ? 1 : 0;
                 }))
-                .then(Commands.literal("benchmark").requires(s -> s.hasPermission(2)).executes(context -> {
+                .then(Commands.literal("benchmark").requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.benchmark();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] benchmark=" + result.name()
                             + " detail=" + result.detail()), false);
