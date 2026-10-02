@@ -19,13 +19,6 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-        with:
-          packages: "platform-tools"
-
-      - name: Install Android platform
-        run: sdkmanager "platforms;android-35"
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
