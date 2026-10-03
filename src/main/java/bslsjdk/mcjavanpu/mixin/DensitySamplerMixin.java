@@ -6,6 +6,7 @@ import bslsjdk.mcjavanpu.NpuStats;
 import bslsjdk.mcjavanpu.NpuTerrainAssist;
 import bslsjdk.mcjavanpu.NpuTerrainLattice;
 import bslsjdk.mcjavanpu.NpuTerrainGen;
+import bslsjdk.mcjavanpu.NpuTerrainGate;
 import bslsjdk.mcjavanpu.NpuTerrainHook;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
