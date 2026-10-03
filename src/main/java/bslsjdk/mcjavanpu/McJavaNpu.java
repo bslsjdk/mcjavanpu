@@ -788,6 +788,67 @@ public final class McJavaNpu implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("shape")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuShapeAdvisor.examples();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            return 1;
+                        })
+                        .then(Commands.argument("m", IntegerArgumentType.integer(1, 65536))
+                                .then(Commands.argument("k", IntegerArgumentType.integer(1, 65536))
+                                        .then(Commands.argument("n", IntegerArgumentType.integer(1, 65536))
+                                                .executes(context -> {
+                                                    final String l = "[NPU] " + NpuShapeAdvisor.advise(
+                                                            IntegerArgumentType.getInteger(context, "m"),
+                                                            IntegerArgumentType.getInteger(context, "k"),
+                                                            IntegerArgumentType.getInteger(context, "n"));
+                                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                                    return 1;
+                                                })))))
+                .then(Commands.literal("bench")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            // A sweep runs thousands of matmuls and a CPU reference for
+                            // each; on the server thread that is a multi-second freeze.
+                            context.getSource().sendSuccess(
+                                    () -> Component.literal("[NPU] bench sweep started, results arrive in chat"), false);
+                            Thread.ofVirtual().name("mcjavanpu-bench").start(() -> {
+                                try {
+                                    final String out = NpuBench.sweep();
+                                    NpuLog.log(out);
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("[NPU] " + out), false);
+                                } catch (Throwable t) {
+                                    final String l = "[NPU] bench failed: " + t;
+                                    NpuLog.log(l);
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                }
+                            });
+                            return 1;
+                        })
+                        .then(Commands.argument("m", IntegerArgumentType.integer(1, 65536))
+                                .then(Commands.argument("k", IntegerArgumentType.integer(1, 65536))
+                                        .then(Commands.argument("n", IntegerArgumentType.integer(1, 65536))
+                                                .executes(context -> {
+                                                    final int m = IntegerArgumentType.getInteger(context, "m");
+                                                    final int k = IntegerArgumentType.getInteger(context, "k");
+                                                    final int nn = IntegerArgumentType.getInteger(context, "n");
+                                                    context.getSource().sendSuccess(
+                                                            () -> Component.literal("[NPU] bench started"), false);
+                                                    Thread.ofVirtual().name("mcjavanpu-bench").start(() -> {
+                                                        try {
+                                                            final String out = NpuBench.run(m, k, nn, 1, 5).summary();
+                                                            NpuLog.log(out);
+                                                            context.getSource().sendSuccess(
+                                                                    () -> Component.literal("[NPU] " + out), false);
+                                                        } catch (Throwable t) {
+                                                            context.getSource().sendSuccess(
+                                                                    () -> Component.literal("[NPU] bench failed: " + t), false);
+                                                        }
+                                                    });
+                                                    return 1;
+                                                })))))
                 .then(Commands.literal("diag")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
