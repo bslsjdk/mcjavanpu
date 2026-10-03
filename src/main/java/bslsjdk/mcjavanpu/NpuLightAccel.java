@@ -1,5 +1,7 @@
 package bslsjdk.mcjavanpu;
 
+import java.util.concurrent.atomic.AtomicInteger;
+
 /**
  * NPU light propagation over a batch of 8x8x8 voxel blocks.
  *
@@ -20,6 +22,60 @@ package bslsjdk.mcjavanpu;
 public final class NpuLightAccel {
 
     public static final int SIDE = 8;
+
+    /**
+     * Whether each call also computes a dense host reference.
+     *
+     * That reference is an O(m*k*n) triple loop - at m=128, k=n=512 it is 33.5
+     * million multiply-adds in Java - and it exists only to prove the device
+     * result is correct (the `bad` counter). It was running on every production
+     * call, which showed up in the field as cpu_us=4491 on real data and up to
+     * 500687 during warmup, all of it on the calling thread and none of it
+     * contributing anything to the game.
+     *
+     * Off by default. Warmup and the benchmark switch it on for the calls whose
+     * whole purpose is measurement.
+     */
+    private static volatile boolean verify = false;
+
+    /** Consecutive real calls that changed nothing. */
+    private static final AtomicInteger ZERO_WRITES = new AtomicInteger();
+    /** How many no-op calls in a row before the path stops being attempted. */
+    private static final int ZERO_WRITE_LIMIT = 6;
+    private static volatile boolean noEffect;
+
+    public static void setVerify(boolean v) { verify = v; }
+    public static boolean isVerify() { return verify; }
+
+    /**
+     * Record how many cells a real call actually changed.
+     *
+     * This is the honest measure of whether the feature is doing anything. In the
+     * uploaded log a real lightapply cost 37782us on the device plus 4491us of
+     * reference and reported written=0 - the full price, no effect at all. After
+     * ZERO_WRITE_LIMIT such calls in a row the path refuses to run, so a feature
+     * that cannot help stops costing anything instead of burning 40ms per call
+     * forever.
+     */
+    public static void noteWritten(int n) {
+        if (n > 0) {
+            if (ZERO_WRITES.getAndSet(0) != 0 || noEffect) {
+                noEffect = false;
+                NpuLog.log("light: write-back active again (" + n + " cells)");
+            }
+            return;
+        }
+        int z = ZERO_WRITES.incrementAndGet();
+        if (z == ZERO_WRITE_LIMIT) {
+            noEffect = true;
+            NpuLog.warn("light: " + z + " consecutive calls changed 0 cells - "
+                    + "disabling the path. It was paying full device cost for no effect.");
+        }
+    }
+
+    public static boolean isNoEffect() { return noEffect; }
+    public static int zeroWrites() { return ZERO_WRITES.get(); }
+    public static void resetNoEffect() { ZERO_WRITES.set(0); noEffect = false; }
     public static final int CELLS = SIDE * SIDE * SIDE;   // 512
 
     /** Weight of each of the 6 face neighbours; the centre keeps the rest. */
@@ -129,6 +185,11 @@ public final class NpuLightAccel {
         if (!NpuGuard.allow()) {
             return new Result(false, "GUARD_DEGRADED " + NpuGuard.reason(), 0, 0, 0, 0f, m, k, n);
         }
+        // Refuse to run at all once the path has repeatedly changed nothing. Trying
+        // again would just pay the device cost one more time for the same zero.
+        if (noEffect) {
+            return new Result(false, "NO_EFFECT after " + ZERO_WRITES.get() + " empty calls", 0, 0, 0, 0f, m, k, n);
+        }
         int[] sh = NpuDispatcher.planShape(m, k, n);
 
         // Report the real executed shape, not the requested one. A shape that pads heavily is the
@@ -142,6 +203,16 @@ public final class NpuLightAccel {
         long npuUs = (System.nanoTime() - t0) / 1000;
         NpuGuard.recordUs(npuUs);
         if (!r.ok()) return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
+
+        byte[] c = r.c();
+
+        // The dense host reference is a correctness check, not part of the job. It is
+        // O(m*k*n) Java work on the calling thread - measured at 4491us on real data
+        // and up to 500687us during warmup - so it only runs when a caller has asked
+        // for verification (warmup, benchmark, debug).
+        if (!verify) {
+            return new Result(true, null, npuUs, 0, -1, 0f, sh[0], sh[1], sh[2], c, r.scaleC());
+        }
 
         long t1 = System.nanoTime();
         final float Q = 1.0e-6f;
@@ -158,7 +229,6 @@ public final class NpuLightAccel {
         long cpuUs = (System.nanoTime() - t1) / 1000;
 
         int bad = 0; float maxAbs = 0f;
-        byte[] c = r.c();
         for (int i = 0; i < m; i++) {
             for (int j = 0; j < n; j++) {
                 float got = c[i * n + j] * r.scaleC();
