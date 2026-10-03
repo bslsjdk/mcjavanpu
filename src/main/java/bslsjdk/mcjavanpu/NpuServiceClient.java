@@ -1,5 +1,7 @@
 package bslsjdk.mcjavanpu;
 
+import java.io.BufferedInputStream;
+import java.io.BufferedOutputStream;
 import java.io.ByteArrayOutputStream;
 import java.io.EOFException;
 import java.io.IOException;
@@ -33,22 +35,29 @@ public final class NpuServiceClient {
 
     private NpuServiceClient() {}
 
-    private static synchronized void close() {
+    private static synchronized void close() { closeStreams(); }
+
+    private static synchronized void closeStreams() {
+        try { if (out != null) out.flush(); } catch (Throwable ignored) {}
         try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
-        socket = null;
-        in = null;
-        out = null;
+        socket = null; in = null; out = null;
     }
 
     private static synchronized void connect() throws IOException {
-        close();
+        closeStreams();
         Socket s = new Socket();
         s.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
         s.setSoTimeout(READ_TIMEOUT_MS);
         s.setTcpNoDelay(true);
+        // A 512^3 submit moves ~780KB over loopback. The unbuffered streams turned
+        // that into a long series of small syscalls and showed up as ~15ms on top
+        // of the 5.5ms the HTP actually needed. Big socket buffers plus buffered
+        // streams collapse the payload into a handful of large transfers.
+        try { s.setSendBufferSize(1 << 20); } catch (Throwable ignored) {}
+        try { s.setReceiveBufferSize(1 << 20); } catch (Throwable ignored) {}
         socket = s;
-        in = s.getInputStream();
-        out = s.getOutputStream();
+        in = new BufferedInputStream(s.getInputStream(), 256 * 1024);
+        out = new BufferedOutputStream(s.getOutputStream(), 256 * 1024);
     }
 
     private static String readLineUtf8(InputStream is) throws IOException {
