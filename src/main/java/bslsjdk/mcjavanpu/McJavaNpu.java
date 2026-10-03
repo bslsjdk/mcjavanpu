@@ -280,6 +280,50 @@ public final class McJavaNpu implements ModInitializer {
         return r.ok ? 1 : 0;
     }
 
+    /** Talks to the REAL light storage (LightEngine -> listener -> DataLayer). */
+    private static int runLightApply(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+        String info;
+        try {
+            Object level = context.getSource().getLevel();
+            Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
+            Object blockLayer = null;
+            for (Object o : ll.getEnumConstants()) if ("BLOCK".equals(String.valueOf(o))) blockLayer = o;
+            Object le = level.getClass().getMethod("getLightEngine").invoke(level);
+            Object listener = le.getClass().getMethod("getLayerListener", ll).invoke(le, blockLayer);
+            Object pos = context.getSource().getClass().getMethod("getPosition").invoke(context.getSource());
+            Class<?> pc = pos.getClass();
+            int bx = (int) Math.floor(((Number) pc.getField("x").get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) pc.getField("y").get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
+            Class<?> sp = Class.forName("net.minecraft.core.SectionPos");
+            Object section = sp.getMethod("of", int.class, int.class, int.class).invoke(null, bx >> 4, by >> 4, bz >> 4);
+            Object dl = listener.getClass().getMethod("getDataLayerData", sp).invoke(listener, section);
+            if (dl instanceof java.util.Optional) dl = ((java.util.Optional<?>) dl).orElse(null);
+            if (dl == null) {
+                info = "DataLayer=null (section not loaded / empty)";
+            } else {
+                java.lang.reflect.Method g = dl.getClass().getMethod("get", int.class, int.class, int.class);
+                byte[] cells = new byte[NpuLightAccel.CELLS];
+                int nz = 0;
+                for (int y = 0; y < 8; y++)
+                    for (int z = 0; z < 8; z++)
+                        for (int x = 0; x < 8; x++) {
+                            int v = ((Number) g.invoke(dl, x, y, z)).intValue();
+                            cells[(y * 8 + z) * 8 + x] = (byte) (v & 0xFF);
+                            if (v > 0) nz++;
+                        }
+                NpuLightAccel.Result r = NpuLightAccel.propagateReal(cells, 128);
+                info = "DataLayer=" + dl.getClass().getSimpleName() + " nonzero=" + nz + "/512 | " + r.summary();
+            }
+        } catch (Throwable t) {
+            info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
+        }
+        final String line = "[NPU] lightapply " + info;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        NpuLog.log(line);
+        return 0;
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -380,6 +424,9 @@ public final class McJavaNpu implements ModInitializer {
                             context.getSource().sendSuccess(() -> Component.literal("[NPU] config saved"), false);
                             return 1;
                         })))
+                .then(Commands.literal("lightapply")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runLightApply(context)))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
