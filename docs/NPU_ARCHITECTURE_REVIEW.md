@@ -451,3 +451,88 @@ GPT 的 P0–P6 基本合理，我把「批量提交」提前，理由是 binary
 ---
 
 *—— 元宝（Yuanbao），2026-10-03 追加*
+
+---
+
+# 12. 第四轮 · 优化 + 改进 + 新功能（元宝）
+
+日期：2026-10-03。执行顺序按用户要求：**优化和改进优先，新功能在后。**
+
+## 12.0 首先：撤回一个错误结论
+
+`YUANBAO_CORRECTION_P0_1.md`（已提交到两个仓库）—— 上一轮我判断"padding 浪费 512 倍"是**错的**，已撤回。
+
+`n=512` 是 `NpuLightAccel` 里 512×512 传播算子的真实维度（8×8×8 体素的 6 邻域），不是 padding。该路径现在是 **NPU 5.5ms vs host 40ms ≈ 7 倍正收益**。
+
+**如果你正在准备改 n=512，请停手。**
+
+## 12.1 优化（Optimisation）
+
+### `ac54d225f9` — 反射句柄缓存
+
+`NpuChunkWork.runForChunk` 跑在 server tick 上，每次调用做 4 次反射查找：
+
+```
+engine.getClass().getMethods()    → getLayerListener
+listener.getClass().getMethods()  → getDataLayerData
+engine.getClass().getMethods()    → queueSectionData
+SectionPos.class.getMethod("of")
+```
+
+`Class.getMethods()` **每次调用都克隆整个 Method 数组**（Java 规范要求，防止调用方篡改类自身的数组）。LightEngine 有几十个方法 → **每秒几十次 × 4 次全量克隆**。
+
+改为按 `engine.getClass()` + `listener.getClass()` 缓存已解析的 Method，换世界/维度自动失效，首次之后零遍历。
+
+同时把方法内的 8 项 sub-block 偏移表提为类级常量（原先每 chunk 分配 9 个数组）。
+
+### `0b981f6ea5` — server tick 时间预算
+
+`NpuWorkQueue.pump()` 在 **server 线程**上同步做 IPC，而 `READ_TIMEOUT_MS = 8000`。health 缓存让常见情况很快，但**服务"活着但很慢"时，一次 pump 可能卡住数秒**，且没有任何上界。
+
+现在每次 pump 有 4ms 墙钟预算，超了就把剩余项放回队首等下一 tick。overrun 计数进 `summary()` —— **持续上升的 overrun 是"服务慢"而非"服务挂"的信号**。
+
+## 12.2 改进（Bug fix）
+
+### `3c75a2d984` — reloadchunks 反射匹配
+
+每次切模式都报 `NoSuchMethodException`。签名换过不止一次（SectionPos → ChunkPos → 26.3 又改），每次修都是再一次硬猜。
+
+改为**按形状匹配**：找名字同时含 "light" 和 "enabled"、第二参为 boolean 的两参方法，再按第一参的实际类型构造位置参数（ChunkPos/SectionPos 用 (int,int) 构造器，或 packed long，或裸 int）。
+
+仍失败时**不再干抛异常**，而是把 LightEngine 上所有名字含 light/enable 的方法连同完整参数类型打进日志 —— 下一次修就有依据，不用再猜。
+
+## 12.3 新功能（Feature）
+
+### `c9b836f970` + `e3edc1fe5a` + `ce3c15a4f2` — 天空光 SKY light
+
+光照是唯一已实测证明正收益的路径（7x），但它**只处理 BLOCK 层，SKY 层完全没走 NPU** —— 一半光照成本没动。
+
+天空光和方块光是**同形状的计算**（同一个算子作用于整个 8×8×8 block），可以走完全相同的管线。section 主体抽成 `propagateSection()`，按 layer 各跑一次。
+
+**默认关闭**（`NpuConfig.skyLight=false），因为天空光的传播规则和线性算子的假设不同（向下传播不衰减，直到被不透明方块挡住），所以那里是近似结果。
+
+安全边界不变：**write-back 仍然 raise-only**，NPU 只提亮不调暗，原版结果永远是下限 —— 世界不可能变暗。
+
+游戏内"天空光 skyLight"开关，标签注明"近似算子，只提亮不调暗"。
+
+## 12.4 本轮提交清单
+
+| Commit | 类型 | 内容 |
+|---|---|---|
+| `82aa252f80` / `822ef2b5a6` | docs | **撤回 P0-1**（两仓库都放了） |
+| `ac54d225f9` | 优化 | 反射句柄缓存 + SUB 常量化 |
+| `0b981f6ea5` | 优化 | server tick 4ms 预算 + overrun 计数 |
+| `3c75a2d984` | 改进 | reloadchunks 按形状匹配 + 方法清单诊断 |
+| `e3edc1fe5a` | 新功能 | skyLight 配置开关（默认关） |
+| `c9b836f970` | 新功能 | SKY 光照路径 + propagateSection 抽取 |
+| `ce3c15a4f2` | 新功能 | 游戏内 skyLight 开关 |
+
+## 12.5 下一步建议
+
+1. **先验证 SKY 光**：开着跑一次，确认不会出现视觉异常（天空光变亮过头）。如果正常，它就翻倍了光照加速的覆盖面。
+2. **看 overrun 计数**：`NpuWorkQueue.summary()` 里。持续 >0 说明服务慢，该查服务不是查算法。
+3. **reloadchunks 日志**：现在会打印真实方法清单，拿到后就能一次定死正确签名。
+
+---
+
+*—— 元宝（Yuanbao），2026-10-03*
