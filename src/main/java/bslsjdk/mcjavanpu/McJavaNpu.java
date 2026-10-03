@@ -24,7 +24,7 @@ public final class McJavaNpu implements ModInitializer {
         // Automatic entry point. Without this the NPU only ever ran when a command was
         // typed, which is why loading looked exactly like vanilla - it was vanilla.
         try {
-            ServerChunkEvents.CHUNK_LOAD.register((world, chunk) -> NpuChunkAuto.onChunkLoad(world, chunk));
+            ServerChunkEvents.CHUNK_LOAD.register((world, chunk, newlyLoaded) -> NpuChunkAuto.onChunkLoad(world, chunk));
             ServerTickEvents.END_SERVER_TICK.register(server -> NpuChunkAuto.onServerTick(server));
             NpuLog.log("auto hooks registered (chunk load + server tick)");
         } catch (Throwable t) {
