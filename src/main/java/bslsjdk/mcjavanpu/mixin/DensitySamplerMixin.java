@@ -2,6 +2,7 @@ package bslsjdk.mcjavanpu.mixin;
 
 import bslsjdk.mcjavanpu.NpuConfig;
 import bslsjdk.mcjavanpu.NpuStats;
+import bslsjdk.mcjavanpu.NpuTerrainAssist;
 import bslsjdk.mcjavanpu.NpuTerrainGen;
 import bslsjdk.mcjavanpu.NpuTerrainHook;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
