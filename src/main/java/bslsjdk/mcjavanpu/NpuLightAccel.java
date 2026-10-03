@@ -114,10 +114,12 @@ public final class NpuLightAccel {
         long t1 = System.nanoTime();
         final float Q = 1.0e-6f;
         float[] ref = new float[m * n];
+        // Dense reference: every p is visited even when a is zero. Skipping zeros here
+        // would flatter the host badly (light fields are sparse), and the number that
+        // matters is how the NPU compares against the work the game would actually do.
         for (int i = 0; i < m; i++) {
             for (int p = 0; p < k; p++) {
                 int av = a[i * k + p];
-                if (av == 0) continue;
                 for (int j = 0; j < n; j++) ref[i * n + j] += av * b[p * n + j] * Q;
             }
         }
