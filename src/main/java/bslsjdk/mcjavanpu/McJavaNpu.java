@@ -304,7 +304,29 @@ public final class McJavaNpu implements ModInitializer {
             int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
             Class<?> sp = Class.forName("net.minecraft.core.SectionPos");
             java.lang.reflect.Method spOf = sp.getMethod("of", int.class, int.class, int.class);
-            int scx = bx >> 4, scy = by >> 4, scz = bz >> 4;
+            int scx = bx >> 4, scz = bz >> 4;
+            int scyPlayer = by >> 4;
+
+            // Air-only sections get no DataLayer at all (the engine skips allocating
+            // storage for them), so a player standing in the air has nothing to read.
+            // Walk down (then up) to find a section that actually owns storage.
+            java.lang.reflect.Method gdd = listener.getClass().getMethod("getDataLayerData", sp);
+            int scy = Integer.MIN_VALUE;
+            for (int dy = 0; dy <= 12 && scy == Integer.MIN_VALUE; dy++) {
+                int[] cands = {scyPlayer - dy, scyPlayer + dy};
+                for (int cy : cands) {
+                    Object sec = spOf.invoke(null, scx, cy, scz);
+                    Object probe = gdd.invoke(listener, sec);
+                    if (probe instanceof java.util.Optional) probe = ((java.util.Optional<?>) probe).orElse(null);
+                    if (probe != null) { scy = cy; break; }
+                }
+            }
+            if (scy == Integer.MIN_VALUE) {
+                scy = scyPlayer;
+                NpuLog.log("lightapply: no allocated section within +/-12 of y-section " + scyPlayer);
+            } else if (scy != scyPlayer) {
+                NpuLog.log("lightapply: player section " + scyPlayer + " empty, using " + scy);
+            }
 
             java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
             java.util.List<Object> layers = new java.util.ArrayList<>();
