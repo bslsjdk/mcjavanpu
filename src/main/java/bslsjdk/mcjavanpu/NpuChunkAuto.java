@@ -74,6 +74,27 @@ public final class NpuChunkAuto {
         }
     }
 
+    /**
+     * Enqueue a chunk that has not loaded yet, for NpuPreload's predictive sweep.
+     *
+     * Same bounds as the reactive path: shed when full, skip when the service is
+     * not healthy, never block. Preload is a bonus and must never become a source
+     * of load.
+     */
+    public static void requestAhead(int cx, int cz) {
+        NpuConfig cfg = NpuConfig.get();
+        if (cfg == null || !cfg.enabled) return;
+        if ("vanilla".equalsIgnoreCase(cfg.lightMode)
+                && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
+        try {
+            if (PENDING.size() >= PENDING_CAP) { DROPPED.incrementAndGet(); return; }
+            if (!NpuServiceClient.healthy()) { SKIPPED.incrementAndGet(); return; }
+            PENDING.add((((long) cx) << 32) ^ (cz & 0xFFFFFFFFL));
+        } catch (Throwable t) {
+            NpuLog.error("preload enqueue failed", t);
+        }
+    }
+
     /** Called every server tick. Drains at most one submission's worth per call. */
     public static void onServerTick(Object server) {
         NpuConfig cfg = NpuConfig.get();
@@ -84,6 +105,10 @@ public final class NpuChunkAuto {
             boolean ready = size >= BATCH_MIN || ticksSinceFlush >= BATCH_TICKS;
             if (ready) flush(size);
         }
+        // Predictive preload, ahead of the reactive work below. Runs on the same
+        // tick but is bounded to one small sweep per second.
+        NpuPreload.onServerTick(NpuChunkWork.level());
+
         // Always drain at a fixed, small rate. This is the only place NPU chunk work runs,
         // and it runs on the server thread, so the rate limit is what keeps loading smooth.
         NpuWorkQueue.pump();
