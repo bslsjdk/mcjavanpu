@@ -120,6 +120,11 @@ public abstract class DensitySamplerMixin {
             return;
         }
 
+        // If the gate would refuse the result anyway, do not spend anything producing
+        // it. This is the difference between "the mod is a passive observer" and
+        // "the mod is quietly evaluating terrain in the background for nothing".
+        if (!NpuTerrainGate.worthComputing()) return;
+
         // Bounded and non-blocking: it either lands in the queue or is dropped. Either way this
         // call returns immediately.
         // 9x9 work set, not just this chunk. One request plans 81 chunks and the background batcher
