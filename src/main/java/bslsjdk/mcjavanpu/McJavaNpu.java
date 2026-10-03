@@ -58,6 +58,9 @@ public final class McJavaNpu implements ModInitializer {
             // compete with chunk loading.
             try { Thread.sleep(20000L); } catch (InterruptedException ie) { return; }
 
+            // Warmup exists to measure, so this is where the host reference is worth
+            // paying for. Everywhere else it is pure overhead on the calling thread.
+            NpuLightAccel.setVerify(true);
             long t0 = System.nanoTime();
             NpuLightAccel.Result r = NpuLightAccel.propagate(cfg.lightBatch);
             long ms = (System.nanoTime() - t0) / 1000000L;
@@ -67,6 +70,7 @@ public final class McJavaNpu implements ModInitializer {
             NpuLightAccel.Result r2 = NpuLightAccel.propagate(cfg.lightBatch);
             long ms2 = (System.nanoTime() - t1) / 1000000L;
             NpuLog.log("warmup steady: " + r2.summary() + " wall_ms=" + ms2);
+            NpuLightAccel.setVerify(false);
             NpuLog.log("boot: done, graphs are hot");
         } catch (Throwable t) {
             NpuLog.error("boot failed", t);
@@ -547,6 +551,7 @@ public final class McJavaNpu implements ModInitializer {
                                     row++;
                                 }
                     }
+                    NpuLightAccel.noteWritten(raised);
                     info = "mode=" + mode + " ASSIST sections=" + sections + " rows=" + rows
                             + " raised=" + raised + "/" + (rows * NpuLightAccel.CELLS)
                             + " (cpu continues from this)" + " | " + r.summary();
@@ -569,6 +574,7 @@ public final class McJavaNpu implements ModInitializer {
                                     row++;
                                 }
                     }
+                    NpuLightAccel.noteWritten(written);
                     info = "mode=" + mode + " APPLIED sections=" + sections + " rows=" + rows + " written=" + written + " | " + r.summary();
                 }
             }
