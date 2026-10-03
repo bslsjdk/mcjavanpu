@@ -151,7 +151,41 @@ public final class NpuServiceClient {
      * Binary data plane: header line, raw A bytes, raw B bytes, then a header line
      * and the raw int8 result.
      */
-    public static synchronized MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
+    private static final java.util.concurrent.atomic.AtomicLong IN_LOCK_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong IN_LOCK_MAX_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong IN_LOCK_N =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /**
+     * Wall time measured inside the submission lock.
+     *
+     * This class is static synchronized, and the native side adds a second global mutex behind
+     * that. The time a caller sees is therefore service time PLUS however long this thread waited
+     * for the lock - and the prefetch thread and the game thread do contend for it. Recording the
+     * in-lock duration separately is the only way to tell "the service is slow" apart from "we
+     * queued behind someone else", and those two need opposite fixes.
+     */
+    public static String lockSummary() {
+        long n = IN_LOCK_N.get();
+        long avg = n == 0 ? 0 : IN_LOCK_US.get() / n;
+        return "in_lock avg_us=" + avg + " max_us=" + IN_LOCK_MAX_US.get() + " n=" + n;
+    }
+
+    public static MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
+        long t = System.nanoTime();
+        try {
+            return submitBinMatMul8Locked(A, B, m, k, n);
+        } finally {
+            long us = (System.nanoTime() - t) / 1000;
+            IN_LOCK_US.addAndGet(us);
+            IN_LOCK_N.incrementAndGet();
+            if (us > IN_LOCK_MAX_US.get()) IN_LOCK_MAX_US.set(us);
+        }
+    }
+
+    private static synchronized MatMulResult submitBinMatMul8Locked(byte[] A, byte[] B, int m, int k, int n) {
         if (A == null || B == null || m <= 0 || k <= 0 || n <= 0) return new MatMulResult(0, null, 0, "BAD_ARGS");
         if ((long) A.length != (long) m * k || (long) B.length != (long) k * n) return new MatMulResult(0, null, 0, "BAD_SIZE");
         if ((long) A.length + B.length > MAX_PAYLOAD_BYTES) {
