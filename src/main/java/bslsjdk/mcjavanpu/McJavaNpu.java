@@ -868,6 +868,32 @@ public final class McJavaNpu implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("gate")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] terrain " + NpuTerrainGate.summary()
+                                    + " | unsupported=" + NpuDfJson.lastUnsupported()
+                                    + " | " + NpuTerrainVanilla.summary();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log(l);
+                            return 1;
+                        })
+                        .then(Commands.literal("open")
+                                .executes(context -> {
+                                    NpuTerrainGate.setTakeoverAllowed(true);
+                                    final String l = "[NPU] terrain gate OPEN - interpreter will replace vanilla";
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    NpuLog.warn(l);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("close")
+                                .executes(context -> {
+                                    NpuTerrainGate.setTakeoverAllowed(false);
+                                    final String l = "[NPU] terrain gate CLOSED - vanilla always wins";
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    NpuLog.log(l);
+                                    return 1;
+                                })))
                 .then(Commands.literal("guard")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
