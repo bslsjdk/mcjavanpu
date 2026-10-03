@@ -536,3 +536,143 @@ SectionPos.class.getMethod("of")
 ---
 
 *—— 元宝（Yuanbao），2026-10-03*
+
+---
+
+# 13. 第五轮 · 两份实测日志的两个致命发现（元宝）
+
+日期：2026-10-03。依据：上传的 `mcjavanpu-npu.log`（19:00–19:44）+ `latest.log`（22:35）。
+
+## 13.0 先确认：我的模块确实进了构建
+
+`latest.log` 22:35:57：
+
+```
+boot: enabled=true autoWarmup=true debugLog=true autoProbe=true skyLight=false guardEnabled=true ...
+```
+
+`autoProbe` / `skyLight` / `guardEnabled` 三个字段都在 —— 上一轮加的东西是活的。
+
+---
+
+## 13.1 🔴 发现一：每次生产调用都在跑一遍完整的 CPU 参考
+
+日志里最能说明问题的一行：
+
+```
+lightapply APPLIED sections=9 rows=72 written=0 |
+  blocks_batch=128 cells=512 npu_us=37782 cpu_us=4491 speedup=0.12x
+```
+
+`cpu_us=4491` 不是"CPU 更快"的对照值，它是**每次调用都真算了一遍**。
+
+`NpuLightAccel.run()` 里有这个：
+
+```java
+float[] ref = new float[m * n];
+for (i) for (p) for (j) ref[i*n+j] += av * b[p*n+j] * Q;
+```
+
+**O(m·k·n) 的三重 Java 循环，在调用线程上。** m=128、k=n=512 时是 **3355 万次乘加**。产出只有一个 `bad` 正确性计数器。
+
+代价实测：
+
+| 场景 | cpu_us |
+|---|---|
+| 真实 lightapply | 4,491 |
+| warmup（19:00） | **500,687** |
+| warmup（19:43） | 191,174 |
+
+**全部是纯开销，对游戏零贡献。**
+
+### 已修（`7288dde952`）
+
+改为 opt-in：`NpuLightAccel.setVerify()`，默认关。warmup 和 benchmark 打开（它们本来就是为了测量），其余全部跳过。
+
+一个细节：**未验证时 `bad` 返回 -1 而不是 0**。这样"没检查"永远不会被误读成"检查过且正确"。
+
+**收益**：真实路径每次调用省下 ~4.5ms（约 10%），warmup 场景省下高达 500ms。
+
+---
+
+## 13.2 🔴 发现二：唯一一次真实调用，写了 0 个格子
+
+```
+lightapply APPLIED sections=9 rows=72 written=0
+  npu_us=37782  cpu_us=4491
+```
+
+**设备 37.8ms + CPU 4.5ms = 42ms，产出为零。**
+
+这不是"还差点调好"，是**这条路径当前对游戏没有任何作用**。而光照引擎每秒调用约 150 次（日志：10 秒内 1531 次），所以只要它在跑，就是在持续烧钱。
+
+另一次 `lightfold`：
+
+```
+folded sections=9 rows=72 nonzero=1878 | npu_us=18282 cpu_us=10987 speedup=0.60x
+```
+
+源数据里明明有 1878 个非零点，仍然慢于 CPU。
+
+### 已修（`7288dde952` + `1179324a1d` + `0ae024a3ee` + `9bfc8d7794`）
+
+新增"零写入"检测：
+
+```
+noteWritten(n)  每次真实写回都上报实际改变了多少格
+   ↓
+连续 6 次 = 0  →  路径直接拒绝运行，日志说明原因
+   ↓
+任何一次 > 0    →  计数清零，自动恢复
+```
+
+关键：**拒绝运行发生在 `run()` 最前面**，连 NPU 调用都不发 —— 不是"算完再说没用"，是根本不再花那 40ms。
+
+界面也会显示"空写入 n/6"和"light NO_EFFECT"，不用开日志就能看到。
+
+---
+
+## 13.3 关于那个 speedup 数字，证据更足了
+
+跨 4 次会话的 warmup steady：
+
+| 会话 | npu_us | cpu_us | speedup |
+|---|---|---|---|
+| 19:00 | 9,770 | 203,161 | 20.79x |
+| 19:13 | 17,685 | 106,615 | 6.03x |
+| 19:39 | 11,476 | 44,122 | 3.84x |
+| 19:43 | 14,025 | 88,290 | 6.30x |
+
+`npu_us` 相对稳定（10–18ms），`cpu_us` 从 44,122 跳到 203,161（**4.6 倍**）。
+
+**波动全在 CPU 侧** —— 也就是 JIT 预热和 GC 状态，跟 NPU 无关。所以 `cpu_us / npu_us` 这个比值测的主要是"JVM 今天热不热"，不是"NPU 快不快"。
+
+真实调用给出 0.12x，warmup 给出 20.79x —— **同一个算法，差 173 倍**。这个数字不能用于任何决策，必须换成 `NpuBench` 的 `pipelineSpeedup` + p99。
+
+---
+
+## 13.4 仍然成立 / 仍未修的
+
+- ✅ 进程内路线已死：`clns-9` namespace 实锤（两份日志都有）
+- ✅ mcnpu IPC 路线通：`PONG MCNPU/1`、`backendId=6`
+- ✅ reloadchunks 反射失败：本次日志又出现 **2 次**，我上轮的按形状匹配已提交（`3c75a2d984`），等下次验证
+- ⚠️ `written=0` 的**根因**还没定位 —— 我这次只做了"检测并停止"，没修根本。可能是时机问题（光照尚未生成，log 里也出现过 `no DataLayer in range (sections not loaded)`），也可能是线性平滑算子对已收敛的 BFS 光照场本就提不出更亮的值。**下一步要查这个，而不是继续加功能。**
+
+## 13.5 本轮提交
+
+| Commit | 内容 |
+|---|---|
+| `7288dde952` | CPU 参考改为 opt-in；零写入检测与自动停用 |
+| `1179324a1d` | warmup 开验证、lightapply 上报写入数 |
+| `0ae024a3ee` | chunkwork 统计并上报实际改变格数 |
+| `9bfc8d7794` | 界面显示空写入计数与 NO_EFFECT 状态 |
+
+## 13.6 下一步（建议顺序）
+
+1. **看新日志里有没有 `light: N consecutive calls changed 0 cells`** —— 有，就证实这条路径当前无效，先别再加功能
+2. **查 `written=0` 的根因**：在写回处打印 NPU 输出的最大值/非零个数，判断是"输入全 0"还是"输出比原值小"
+3. 拿到 `pipelineSpeedup` 之前，不要相信任何 speedup 数字
+
+---
+
+*—— 元宝（Yuanbao），2026-10-03*
