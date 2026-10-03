@@ -29,7 +29,14 @@ public final class NpuTerrainLattice {
 
     public static final int CELL_XZ = 4;
     public static final int CELL_Y = 8;
-    public static final int K = 32;
+    /**
+     * Features per lattice point.
+     *
+     * Bounded by the service: CAPABILITIES reports max_elements=16384, and one chunk's lattice
+     * is 768 points, so the feature count must satisfy 768 * K <= 16384 -> K <= 21. Sixteen is the
+     * largest power of two that fits, and it also keeps the int8 product inside range.
+     */
+    public static final int K = 16;
     private static final int OCTAVES = 4;
 
     private NpuTerrainLattice() {}
@@ -88,9 +95,10 @@ public final class NpuTerrainLattice {
         float[] b = new float[K];
         java.util.Random r = new java.util.Random(seed * 0x9E3779B9L);
         for (int i = 0; i < 8; i++) b[i] = (r.nextFloat() - 0.5f) * 1.2f;
-        for (int i = 8; i < 8 + OCTAVES * 2; i++) b[i] = (r.nextFloat() - 0.5f) * 1.6f;
-        if (K - 2 >= 0) b[K - 2] = -1.2f;    // ground gradient dominates
-        if (K - 5 >= 0) b[K - 5] = 0.9f;
+        for (int i = 8; i < K; i++) b[i] = (r.nextFloat() - 0.5f) * 1.6f;
+        b[4] = -1.2f;    // wy ramp dominates: solid below, air above
+        b[5] = 0.9f;
+        b[6] = 0.9f;
         return b;
     }
 
