@@ -35,6 +35,24 @@ public final class NpuLightAccel {
 
     private static int idx(int x, int y, int z) { return (y * SIDE + z) * SIDE + x; }
 
+    /**
+     * Cached operator.
+     *
+     * The propagation matrix is a constant: it depends only on the 8x8x8 geometry, never on the
+     * data being propagated. It was being rebuilt on every call (256 KB of allocation plus the
+     * fill loop) which showed up directly in the per-call cost. Built once, reused forever.
+     */
+    private static volatile byte[] OPERATOR;
+
+    public static byte[] operator() {
+        byte[] op = OPERATOR;
+        if (op == null) {
+            op = buildOperator();
+            OPERATOR = op;
+        }
+        return op;
+    }
+
     /** 512 x 512 sparse propagation matrix, quantised to int8. */
     public static byte[] buildOperator() {
         byte[] b = new byte[CELLS * CELLS];
@@ -105,10 +123,24 @@ public final class NpuLightAccel {
 
     /** Shared submit-and-compare core. `a` is m*k, `b` is k*n. */
     private static Result run(byte[] a, byte[] b, int m, int k, int n) {
+        // Adaptive backoff. When the rolling p99 stops being worth paying, callers are told no
+        // immediately and the vanilla path takes over - the game must never be slowed down by an
+        // accelerator that is currently losing.
+        if (!NpuGuard.allow()) {
+            return new Result(false, "GUARD_DEGRADED " + NpuGuard.reason(), 0, 0, 0, 0f, m, k, n);
+        }
         int[] sh = NpuDispatcher.planShape(m, k, n);
+
+        // Report the real executed shape, not the requested one. A shape that pads heavily is the
+        // single most expensive mistake in this file, and it is invisible unless it is printed.
+        if (NpuConfig.get().debugLog && (sh[0] != m || sh[1] != k || sh[2] != n)) {
+            NpuLog.log("shape " + NpuShapeAdvisor.advise(m, k, n));
+        }
+
         long t0 = System.nanoTime();
         NpuRuntime.MatMulResult r = NpuDispatcher.submit(a, b, m, k, n);
         long npuUs = (System.nanoTime() - t0) / 1000;
+        NpuGuard.recordUs(npuUs);
         if (!r.ok()) return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
 
         long t1 = System.nanoTime();
@@ -151,7 +183,7 @@ public final class NpuLightAccel {
         if (a == null || a.length < m * CELLS) {
             return new Result(false, "A_TOO_SHORT need=" + (m * CELLS), 0, 0, 0, 0f, m, CELLS, CELLS);
         }
-        return run(a, buildOperator(), m, CELLS, CELLS);
+        return run(a, operator(), m, CELLS, CELLS);
     }
 
     /**
