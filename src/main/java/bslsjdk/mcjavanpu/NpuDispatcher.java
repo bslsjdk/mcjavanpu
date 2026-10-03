@@ -8,7 +8,7 @@ package bslsjdk.mcjavanpu;
  *   - m = 63            -> borderline (intermittent)
  *   - m >= 128          -> stable
  *   - m from 100 to 257 -> cost unchanged (m is essentially free)
- *   - k / n             -> no whitelist, any value works
+ *   - m / k / n         -> each dimension is independently rounded to the measured whitelist
  *   - cost              -> ~O(k*n); 512^3 is ~4x 256^3
  *
  * So: keep m at or above M_MIN, round k/n up to a coarse bucket so the same
@@ -44,12 +44,35 @@ public final class NpuDispatcher {
      * Returns null when the logical shape cannot be expressed at all, so callers
      * can fall back immediately instead of paying for padding + IPC + a failed call.
      */
+    public static int planDimension(int actual) {
+        if (actual <= 0) return 0;
+        int bucket = ceilToBucket(actual);
+        if (bucket == 0) return 0;
+        return Math.max(bucket, M_MIN);
+    }
+
     public static int[] planShape(int mActual, int kActual, int nActual) {
-        int m = Math.max(mActual, M_MIN);
-        int k = ceilToBucket(kActual);
-        int n = ceilToBucket(nActual);
-        if (m > MM_MAX || k == 0 || n == 0) return null;
+        if (mActual <= 0 || kActual <= 0 || nActual <= 0) return null;
+        int m = planDimension(mActual);
+        int k = planDimension(kActual);
+        int n = planDimension(nActual);
+        if (m == 0 || k == 0 || n == 0 || m > MM_MAX || k > MM_MAX || n > MM_MAX) return null;
         return new int[]{m, k, n};
+    }
+
+    /** Ratio of planned tensor work to logical tensor work. 1.0 means no padding. */
+    public static double paddingRatio(int mActual, int kActual, int nActual) {
+        int[] sh = planShape(mActual, kActual, nActual);
+        if (sh == null) return Double.POSITIVE_INFINITY;
+        long logical = (long) mActual * kActual * nActual;
+        long planned = (long) sh[0] * sh[1] * sh[2];
+        return logical <= 0 ? Double.POSITIVE_INFINITY : planned / (double) logical;
+    }
+
+    /** True when the planned shape stays below a padding multiplier. */
+    public static boolean paddingWithin(int mActual, int kActual, int nActual, double maxRatio) {
+        return Double.isFinite(maxRatio) && maxRatio >= 1.0
+                && paddingRatio(mActual, kActual, nActual) <= maxRatio;
     }
 
     /**
