@@ -56,6 +56,8 @@ public final class NpuTerrainAssist {
     private static final AtomicLong BUILT = new AtomicLong();
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final AtomicLong FAILED = new AtomicLong();
+    private static final AtomicLong BATCHES = new AtomicLong();
+    private static final AtomicLong LAST_BATCH = new AtomicLong();
     private static volatile boolean workerStarted;
     private static volatile String lastError = "";
 
@@ -74,21 +76,49 @@ public final class NpuTerrainAssist {
     private static void loop() {
         while (true) {
             try {
-                Key k = REQUESTED.take();
-                Thread.sleep(MIN_INTERVAL_MS);
+                Key first = REQUESTED.take();
                 NpuConfig cfg = NpuConfig.get();
                 if (cfg == null || !cfg.enabled) continue;
                 if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) continue;
                 if (!NpuServiceClient.isAvailable()) continue;
 
-                long seed = (k.cx * 341873128712L) ^ (k.cz * 132897987541L) ^ (k.minY * 42317861L);
-                NpuTerrainLattice.Result r = NpuTerrainLattice.generate(k.sx, k.sy, k.sz,
-                        k.cx << 4, k.minY, k.cz << 4, seed);
-                if (!r.usedNpu) { FAILED.incrementAndGet(); lastError = r.note; continue; }
-                synchronized (CACHE) {
-                    CACHE.put(k, new Prepared(r.density, k.sx, k.sy, k.sz));
+                // Gather as many queued requests as the element budget allows for this shape and
+                // submit them together. Batching here rather than per chunk is the whole point:
+                // the native side serialises on one lock, so fewer, larger calls is the only way
+                // to raise throughput.
+                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(first.sx, first.sy, first.sz));
+                java.util.List<Key> batch = new java.util.ArrayList<>(room);
+                batch.add(first);
+                while (batch.size() < room) {
+                    Key next = REQUESTED.peek();
+                    if (next == null) break;
+                    if (next.sx != first.sx || next.sy != first.sy || next.sz != first.sz) break;
+                    if (next.minY != first.minY) break;
+                    batch.add(REQUESTED.take());
                 }
-                BUILT.incrementAndGet();
+                Thread.sleep(MIN_INTERVAL_MS);
+
+                int n = batch.size();
+                int[] cxs = new int[n], czs = new int[n], oys = new int[n];
+                long[] seeds = new long[n];
+                for (int i = 0; i < n; i++) {
+                    Key k = batch.get(i);
+                    cxs[i] = k.cx; czs[i] = k.cz; oys[i] = k.minY;
+                    seeds[i] = (k.cx * 341873128712L) ^ (k.cz * 132897987541L) ^ (k.minY * 42317861L);
+                }
+                long[] npuUs = new long[1], prepUs = new long[1], interpUs = new long[1];
+                float[][] vols = NpuTerrainLattice.generateMulti(n, cxs, czs, oys, seeds,
+                        first.sx, first.sy, first.sz, npuUs, prepUs, interpUs);
+                if (vols.length != n) { FAILED.incrementAndGet(); lastError = "short batch"; continue; }
+
+                synchronized (CACHE) {
+                    for (int i = 0; i < n; i++) {
+                        CACHE.put(batch.get(i), new Prepared(vols[i], first.sx, first.sy, first.sz));
+                    }
+                }
+                BUILT.addAndGet(n);
+                BATCHES.incrementAndGet();
+                LAST_BATCH.set(n);
             } catch (InterruptedException ie) {
                 return;
             } catch (Throwable t) {
@@ -129,6 +159,7 @@ public final class NpuTerrainAssist {
         double rate = (h + m) == 0 ? 0 : h * 100.0 / (h + m);
         return "terrain_assist hits=" + h + " misses=" + m + " hit_rate=" + String.format(java.util.Locale.ROOT, "%.1f%%", rate)
                 + " prepared=" + BUILT.get() + " cached=" + size + "/" + CACHE_CAP
+                + " batches=" + BATCHES.get() + " last_batch=" + LAST_BATCH.get()
                 + " queued=" + REQUESTED.size() + "/" + QUEUE_CAP
                 + " dropped=" + DROPPED.get() + " failed=" + FAILED.get()
                 + (lastError.isEmpty() ? "" : " lastError=" + lastError);
