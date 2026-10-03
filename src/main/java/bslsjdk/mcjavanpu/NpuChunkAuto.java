@@ -1,7 +1,7 @@
 package bslsjdk.mcjavanpu;
 
 import net.minecraft.server.level.ServerLevel;
-import net.minecraft.world.level.chunk.ChunkAccess;
+import net.minecraft.world.level.chunk.LevelChunk;
 
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
@@ -39,7 +39,7 @@ public final class NpuChunkAuto {
     private NpuChunkAuto() {}
 
     /** Called from the chunk-load event, on the server thread. Must be cheap. */
-    public static void onChunkLoad(ServerLevel world, ChunkAccess chunk) {
+    public static void onChunkLoad(ServerLevel world, LevelChunk chunk) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
         if ("vanilla".equalsIgnoreCase(cfg.lightMode) && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
