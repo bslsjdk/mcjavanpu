@@ -60,6 +60,13 @@ public final class NpuChunkAuto {
                 DROPPED.incrementAndGet();
                 return;
             }
+            // The light path has been measured to change nothing (bad=0 together
+            // with written=0: the operator never beats a converged BFS field). Once
+            // the guard has noticed, queueing more light work is pure cost.
+            if (!"vanilla".equalsIgnoreCase(cfg.lightMode) && !NpuGuard.allow()) {
+                SKIPPED.incrementAndGet();
+                return;
+            }
             if (!NpuServiceClient.healthy()) {
                 // Service busy or down: do not queue work we cannot deliver.
                 SKIPPED.incrementAndGet();
@@ -88,6 +95,9 @@ public final class NpuChunkAuto {
                 && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
         try {
             if (PENDING.size() >= PENDING_CAP) { DROPPED.incrementAndGet(); return; }
+            if (!"vanilla".equalsIgnoreCase(cfg.lightMode) && !NpuGuard.allow()) {
+                SKIPPED.incrementAndGet(); return;
+            }
             if (!NpuServiceClient.healthy()) { SKIPPED.incrementAndGet(); return; }
             PENDING.add((((long) cx) << 32) ^ (cz & 0xFFFFFFFFL));
         } catch (Throwable t) {
