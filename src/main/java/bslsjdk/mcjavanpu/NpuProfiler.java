@@ -31,6 +31,26 @@ public final class NpuProfiler {
 
     private static volatile boolean running;
 
+    /** Categories that decide what the NPU could actually eat. */
+    private static final String[][] BUCKETS = {
+        {"noise",   "NormalNoise", "PerlinNoise", "SimplexNoise", "BlendedNoise", "OctavePerlin"},
+        {"spline",  "Spline", "SplineFunction"},
+        {"density", "DensityFunction", "DensitySampler", "NoiseChunk", "DensityVolume"},
+        {"terrain", "ChunkGenerator", "NoiseBasedChunkGenerator", "buildTerrain", "doFill"},
+        {"light",   "LightEngine", "lighting"},
+        {"mesh",    "Mesh", "SectionCompiler", "VertexBuffer", "builder"},
+        {"render",  "Render", "Renderer", "Sodium", "Graphics"},
+        {"entity",  "Entity", "Ai", "Goal", "PathNavigation", "Level.getEntities"},
+        {"gc",      "GC", "Reference", "Finalizer", "Cleaner"},
+    };
+
+    private static String bucketOf(String frame) {
+        for (String[] b : BUCKETS) {
+            for (int i = 1; i < b.length; i++) if (frame.contains(b[i])) return b[0];
+        }
+        return "other";
+    }
+
     public static boolean isRunning() { return running; }
 
     /** Samples for `seconds`, then writes a ranked list to the dedicated log. */
@@ -40,6 +60,7 @@ public final class NpuProfiler {
         final long end = System.currentTimeMillis() + seconds * 1000L;
         final Map<String, long[]> counts = new HashMap<>();
         final Map<String, Map<String, Long>> perThread = new HashMap<>();
+        final Map<String, long[]> buckets = new HashMap<>();
         final java.util.concurrent.atomic.AtomicLong samples = new java.util.concurrent.atomic.AtomicLong();
 
         Thread t = new Thread(() -> {
@@ -51,8 +72,10 @@ public final class NpuProfiler {
                     StackTraceElement[] st = e.getValue();
                     if (st == null || st.length == 0) continue;
                     String frame = shortName(st[0]);
+                    String bucket = bucketOf(frame);
                     synchronized (counts) {
                         counts.computeIfAbsent(frame, k -> new long[1])[0]++;
+                        buckets.computeIfAbsent(bucket, k -> new long[1])[0]++;
                         perThread.computeIfAbsent(frame, k -> new HashMap<>())
                                  .merge(name, 1L, Long::sum);
                     }
@@ -72,6 +95,17 @@ public final class NpuProfiler {
         ranked.sort((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]));
 
         StringBuilder sb = new StringBuilder();
+        long btotal = 0;
+        synchronized (counts) { for (long[] v : buckets.values()) btotal += v[0]; }
+        sb.append("== category split (what the NPU could eat) ==\n");
+        List<Map.Entry<String, long[]>> bl = new ArrayList<>();
+        synchronized (counts) { bl.addAll(buckets.entrySet()); }
+        bl.sort((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]));
+        for (Map.Entry<String, long[]> e : bl) {
+            double pct = btotal == 0 ? 0 : e.getValue()[0] * 100.0 / btotal;
+            sb.append(String.format(java.util.Locale.ROOT, "  %-8s %6.2f%%  %d hits\n", e.getKey(), pct, e.getValue()[0]));
+        }
+        sb.append("== top frames ==\n");
         sb.append("profile over ").append(seconds).append("s, ").append(samples.get()).append(" passes");
         long total = 0;
         for (Map.Entry<String, long[]> e : ranked) total += e.getValue()[0];
