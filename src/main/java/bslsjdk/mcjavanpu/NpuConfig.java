@@ -36,6 +36,17 @@ public final class NpuConfig {
 
     /** Run the full diagnostic set by itself once the world is up. */
     public boolean autoProbe = true;
+
+    /**
+     * Also run the NPU pass over sky light.
+     *
+     * Sky light is the same shape of work as block light, so it rides the same
+     * path. Off by default because its propagation rule is not the same one the
+     * linearised operator models - it does not attenuate on the way down until
+     * something opaque blocks it - so the result there is an approximation.
+     * Write-back is raise-only either way, so the world cannot get darker.
+     */
+    public boolean skyLight = false;
     /** Back off automatically when the NPU stops paying for itself. */
     public boolean guardEnabled = true;
     public int lightBatch = 128;
@@ -82,6 +93,7 @@ public final class NpuConfig {
             autoWarmup = Boolean.parseBoolean(pr.getProperty("autoWarmup", "true"));
             debugLog = Boolean.parseBoolean(pr.getProperty("debugLog", "false"));
             autoProbe = Boolean.parseBoolean(pr.getProperty("autoProbe", "true"));
+            skyLight = Boolean.parseBoolean(pr.getProperty("skyLight", "false"));
             guardEnabled = Boolean.parseBoolean(pr.getProperty("guardEnabled", "true"));
             lightBatch = Integer.parseInt(pr.getProperty("lightBatch", "128"));
             lightFoldRadius = Integer.parseInt(pr.getProperty("lightFoldRadius", "1"));
@@ -105,6 +117,7 @@ public final class NpuConfig {
             pr.setProperty("autoWarmup", String.valueOf(autoWarmup));
             pr.setProperty("debugLog", String.valueOf(debugLog));
             pr.setProperty("autoProbe", String.valueOf(autoProbe));
+            pr.setProperty("skyLight", String.valueOf(skyLight));
             pr.setProperty("guardEnabled", String.valueOf(guardEnabled));
             pr.setProperty("lightBatch", String.valueOf(lightBatch));
             pr.setProperty("lightFoldRadius", String.valueOf(lightFoldRadius));
@@ -127,6 +140,7 @@ public final class NpuConfig {
             case "autoWarmup": autoWarmup = !autoWarmup; break;
             case "debugLog": debugLog = !debugLog; break;
             case "autoProbe": autoProbe = !autoProbe; break;
+            case "skyLight": skyLight = !skyLight; break;
             case "guardEnabled": guardEnabled = !guardEnabled; break;
             case "lightFoldRadius": lightFoldRadius = (lightFoldRadius + 1) % 5; break;
             case "lightMode": lightMode = nextMode(lightMode); break;
@@ -140,6 +154,7 @@ public final class NpuConfig {
     public String describe() {
         return "enabled=" + enabled + " autoWarmup=" + autoWarmup
                 + " debugLog=" + debugLog + " autoProbe=" + autoProbe
+                + " skyLight=" + skyLight
                 + " guardEnabled=" + guardEnabled
                 + " lightBatch=" + lightBatch
                 + " lightFoldRadius=" + lightFoldRadius
