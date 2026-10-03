@@ -134,7 +134,13 @@ public final class NpuTerrainAssist {
 
                 NpuConfig cfg = NpuConfig.get();
                 if (cfg == null || !cfg.enabled) continue;
-                if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) continue;
+                // The feature switch is for measurement, not for permission.
+                //
+                // This line was the second, silent reason the prefetcher never produced anything:
+                // NOISE defaults to false, so every iteration left here - before generating, before
+                // touching the vanilla tree, before incrementing any failure counter. The log showed
+                // processed=0 with failed=0, which is only possible if the loop bailed at the top.
+                // chunkMode already decides whether terrain runs; a stats flag must not veto it.
                 // No health gate here any more.
                 //
                 // This used to be "if not healthy and not reachable, skip the item", and that single
@@ -283,7 +289,7 @@ public final class NpuTerrainAssist {
         // and the only way to have those without stalling is to queue the work, return "not ready"
         // now, and let the background batcher have it done before the request comes back around.
         if (!"assist".equalsIgnoreCase(cfg.chunkMode) && !"npu".equalsIgnoreCase(cfg.chunkMode)) return null;
-        if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) return null;
+        // See loop(): the stats flag is not a permission gate.
         if (!NpuServiceClient.healthy()) return null;
 
         long k = key(cx, cz, minY);
