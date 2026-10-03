@@ -47,6 +47,15 @@ public final class NpuTerrainVanilla {
 
     public static String failReason() { return failReason; }
 
+    /**
+     * Seed the compiled tree was built for.
+     *
+     * The parity harness needs to evaluate the same world the game is generating. Reading the seed
+     * back from the tree guarantees it, and avoids a second source of truth for something that must
+     * match exactly - a wrong seed would look like a failed parity run.
+     */
+    public static long currentSeed() { return treeSeed; }
+
     /** True when sampling runs the compiled program rather than walking the tree. */
     public static boolean lowered() { return program != null; }
 
