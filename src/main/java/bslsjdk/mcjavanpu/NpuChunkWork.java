@@ -85,45 +85,52 @@ public final class NpuChunkWork {
 
             int minSec = level.getMinSection();
             int maxSec = level.getMaxSection();
-            // Start from the highest sections with stored light: bedrock is almost always black.
+
+            // A 16^3 section is exactly 8 sub-blocks of 8^3, so one submission can carry all
+            // eight rows and the batch overhead is paid once per section instead of eight times.
+            final int[][] SUB = {{0,0,0},{8,0,0},{0,0,8},{8,0,8},{0,8,0},{8,8,0},{0,8,8},{8,8,8}};
+            final int SUB_COUNT = SUB.length;
+
             int done = 0;
             for (int sy = maxSec - 1; sy >= minSec && done < MAX_SECTIONS_PER_CHUNK; sy--) {
                 Object sp = spOf.invoke(null, cx, sy, cz);
                 Object dl = getData.invoke(listener, sp);
                 if (!(dl instanceof DataLayer dataLayer)) continue;
 
-                // Flatten 16^3 into the 512-cell layout the operator expects (8^3 blocks).
+                // Gather the eight sub-blocks in the operator's own layout: (y*8 + z)*8 + x.
+                byte[] a = new byte[SUB_COUNT * NpuLightAccel.CELLS];
                 boolean any = false;
-                byte[] cells = new byte[NpuLightAccel.CELLS * 8];
-                int idx = 0;
-                for (int y = 0; y < 16; y++) {
-                    for (int z = 0; z < 16; z++) {
-                        for (int x = 0; x < 16; x++) {
-                            int v = dataLayer.get(x, y, z);
-                            if (v != 0) any = true;
-                            // two cells per byte: value then zero
-                            if (idx < cells.length) cells[idx] = (byte) v;
-                            idx += 2;
+                for (int b = 0; b < SUB_COUNT; b++) {
+                    int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
+                    int base = b * NpuLightAccel.CELLS;
+                    for (int y = 0; y < 8; y++) {
+                        for (int z = 0; z < 8; z++) {
+                            for (int x = 0; x < 8; x++) {
+                                int v = dataLayer.get(ox + x, oy + y, oz + z);
+                                if (v != 0) any = true;
+                                a[base + (y * 8 + z) * 8 + x] = (byte) v;
+                            }
                         }
                     }
                 }
-                if (!any) continue;   // nothing to propagate in this section
+                if (!any) continue;   // fully dark section, nothing to propagate
 
-                NpuLightAccel.Result r = NpuLightAccel.propagateOne(cells);
+                NpuLightAccel.Result r = NpuLightAccel.propagateReal(a, SUB_COUNT);
                 if (!r.ok || r.out == null) continue;
 
-                // Write the propagated values back through the layer's own set() path.
-                int oi = 0;
-                for (int y = 0; y < 16; y++) {
-                    for (int z = 0; z < 16; z++) {
-                        for (int x = 0; x < 16; x++) {
-                            if (oi < r.out.length) {
-                                int nv = r.out[oi] & 0xFF;
-                                int cur = dataLayer.get(x, y, z);
-                                // only ever raise: never let the NPU darken the world
-                                if (nv > cur) dataLayer.set(x, y, z, nv > 15 ? 15 : nv);
+                // Write back through the quantised accessor. Raise-only: the NPU may brighten a
+                // cell but must never darken the world, so the vanilla result always stands as
+                // a floor if it happens to be brighter.
+                for (int b = 0; b < SUB_COUNT; b++) {
+                    int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
+                    for (int y = 0; y < 8; y++) {
+                        for (int z = 0; z < 8; z++) {
+                            for (int x = 0; x < 8; x++) {
+                                int cell = (y * 8 + z) * 8 + x;
+                                int nv = r.light(b, cell);
+                                int cur = dataLayer.get(ox + x, oy + y, oz + z);
+                                if (nv > cur) dataLayer.set(ox + x, oy + y, oz + z, nv > 15 ? 15 : nv);
                             }
-                            oi += 2;
                         }
                     }
                 }
