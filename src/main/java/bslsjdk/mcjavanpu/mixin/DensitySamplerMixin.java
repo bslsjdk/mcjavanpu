@@ -1,6 +1,7 @@
 package bslsjdk.mcjavanpu.mixin;
 
 import bslsjdk.mcjavanpu.NpuConfig;
+import bslsjdk.mcjavanpu.NpuParity;
 import bslsjdk.mcjavanpu.NpuLog;
 import bslsjdk.mcjavanpu.NpuStats;
 import bslsjdk.mcjavanpu.NpuTerrainAssist;
@@ -132,5 +133,22 @@ public abstract class DensitySamplerMixin {
         // is still walking towards them. Queueing only the immediate neighbours left the prefetcher
         // with nothing to do between two submissions.
         NpuTerrainAssist.requestWorkSet(cx, cz, sx, sy, sz, oy);
+    }
+
+    /**
+     * Runs after vanilla has filled the buffer.
+     *
+     * This is the only moment when the buffer holds the game's own numbers and we can prove - or
+     * fail to prove - that our interpreter reproduces them. NpuParity decides whether this chunk is
+     * worth keeping; see that class for the budget and the decision rule. Deliberately passive: it
+     * reads, never writes, and when the gate is open it does nothing at all.
+     */
+    @Inject(method = "sampleVolume", at = @At("RETURN"), require = 0)
+    private void mcjavanpu$afterSampleVolume(DensityBuffer buffer, DensityVolume volume, CallbackInfo ci) {
+        try {
+            NpuParity.offer(buffer, volume);
+        } catch (Throwable t) {
+            NpuLog.error("parity offer failed", t);
+        }
     }
 }
