@@ -25,6 +25,37 @@ public final class NpuServiceClient {
     private static final int CONNECT_TIMEOUT_MS = 1500;
     private static final int READ_TIMEOUT_MS = 8000;
 
+    /**
+     * Hard cap on one tensor. The service is single threaded, so an oversized submit blocks
+     * every later request behind it until it finishes - seen on device as a burst of
+     * SocketTimeoutException that only clears after the game is closed. 16 MiB is far above any
+     * legitimate batch here (a 512-block light batch is ~262KB) and far below the sizes that
+     * wedge the service.
+     */
+    private static final long MAX_PAYLOAD_BYTES = 16L * 1024 * 1024;
+
+    /** After a failure, back off instead of queueing more work on a busy service. */
+    private static final long COOLDOWN_MS = 5000;
+    private static volatile long cooldownUntil;
+    private static volatile String lastFailure = "";
+
+    public static String lastFailure() { return lastFailure; }
+
+    private static boolean cooling() {
+        long until = cooldownUntil;
+        return until != 0 && System.currentTimeMillis() < until;
+    }
+
+    private static void enterCooldown(String why) {
+        lastFailure = why;
+        cooldownUntil = System.currentTimeMillis() + COOLDOWN_MS;
+    }
+
+    private static void clearCooldown() {
+        cooldownUntil = 0;
+        lastFailure = "";
+    }
+
     private static Socket socket;
     private static InputStream in;
     private static OutputStream out;
@@ -89,6 +120,7 @@ public final class NpuServiceClient {
 
     public static synchronized String request(String command) {
         if (command == null || command.isEmpty()) return "ERR EMPTY_COMMAND";
+        if (cooling()) return "ERR SERVICE_COOLDOWN " + lastFailure;
         String lastError = "unknown";
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
@@ -97,13 +129,19 @@ public final class NpuServiceClient {
                 out.flush();
                 String line = readLineUtf8(in);
                 if (line == null) throw new EOFException("service closed connection");
+                clearCooldown();
                 return line;
             } catch (Throwable t) {
                 close();
                 String m = t.getMessage();
                 lastError = t.getClass().getSimpleName() + (m == null ? "" : "(" + m + ")");
+                if (t instanceof java.net.SocketTimeoutException) {
+                    enterCooldown(lastError);
+                    return "ERR SERVICE_BUSY " + lastError;
+                }
             }
         }
+        enterCooldown(lastError);
         return "ERR SERVICE_UNAVAILABLE " + lastError;
     }
 
@@ -114,6 +152,10 @@ public final class NpuServiceClient {
     public static synchronized MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
         if (A == null || B == null || m <= 0 || k <= 0 || n <= 0) return new MatMulResult(0, null, 0, "BAD_ARGS");
         if ((long) A.length != (long) m * k || (long) B.length != (long) k * n) return new MatMulResult(0, null, 0, "BAD_SIZE");
+        if ((long) A.length + B.length > MAX_PAYLOAD_BYTES) {
+            return new MatMulResult(0, null, 0, "TOO_LARGE " + ((long) A.length + B.length) + ">" + MAX_PAYLOAD_BYTES);
+        }
+        if (cooling()) return new MatMulResult(0, null, 0, "SERVICE_COOLDOWN " + lastFailure);
         String lastError = "unknown";
         for (int attempt = 0; attempt < 2; attempt++) {
             try {
@@ -130,19 +172,41 @@ public final class NpuServiceClient {
                 long us = Long.parseLong(field(line, "us"));
                 byte[] c = new byte[cbytes];
                 readFully(in, c, cbytes);
+                clearCooldown();
                 return new MatMulResult(scaleC, c, us, null);
             } catch (Throwable t) {
                 close();
                 String msg = t.getMessage();
                 lastError = t.getClass().getSimpleName() + (msg == null ? "" : "(" + msg + ")");
+                if (t instanceof java.net.SocketTimeoutException) {
+                    enterCooldown(lastError);
+                    return new MatMulResult(0, null, 0, "SERVICE_BUSY " + lastError);
+                }
             }
         }
+        enterCooldown(lastError);
         return new MatMulResult(0, null, 0, "SERVICE_UNAVAILABLE " + lastError);
     }
 
     public static synchronized void closeAll() { close(); }
 
-    public static boolean isAvailable() { return request("PING").startsWith("PONG MCNPU/"); }
+    /** Short probe: never parks a game thread on a busy service. */
+    public static boolean isAvailable() {
+        if (cooling()) return false;
+        try {
+            Socket s = new Socket();
+            s.connect(new InetSocketAddress(HOST, PORT), 300);
+            s.setSoTimeout(800);
+            s.getOutputStream().write("PING\n".getBytes(StandardCharsets.UTF_8));
+            s.getOutputStream().flush();
+            byte[] b = new byte[64];
+            int r = s.getInputStream().read(b);
+            s.close();
+            return r > 0 && new String(b, 0, r, StandardCharsets.UTF_8).startsWith("PONG MCNPU/");
+        } catch (Throwable t) {
+            return false;
+        }
+    }
 
     public static String status() { return request("STATUS"); }
 
