@@ -89,6 +89,12 @@ public final class NpuRuntime {
         return NpuServiceClient.matMul(m,k,n);
     }
 
+    /** INT8 quantized matmul - the path that actually runs at HTP speed. */
+    public static String matMulInt8(int m,int k,int n){
+        if(!isAvailable()) return "ERR MCNPU_OFFLINE "+getDeviceInfo();
+        return NpuServiceClient.matMulInt8(m,k,n);
+    }
+
     public static synchronized void shutdown(){HtpBackend.getInstance().close();}
 
     static synchronized void shutdownInternal(){
