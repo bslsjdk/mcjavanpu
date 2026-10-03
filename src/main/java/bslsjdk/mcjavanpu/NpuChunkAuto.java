@@ -59,7 +59,7 @@ public final class NpuChunkAuto {
                 DROPPED.incrementAndGet();
                 return;
             }
-            if (!NpuServiceClient.isAvailable()) {
+            if (!NpuServiceClient.healthy()) {
                 // Service busy or down: do not queue work we cannot deliver.
                 SKIPPED.incrementAndGet();
                 return;
