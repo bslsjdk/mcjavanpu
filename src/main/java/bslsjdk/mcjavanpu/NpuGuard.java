@@ -73,8 +73,24 @@ public final class NpuGuard {
         totalCalls.incrementAndGet();
         if (!NpuConfig.get().guardEnabled) return;
 
+        // A call that came back inside budget is evidence the path works; take that as a reason to
+        // recover rather than staying degraded until an arbitrary timeout. Without this, a single
+        // slow cold call kept the guard degraded for the whole session.
+        if (micros <= budgetUs && degraded) {
+            degraded = false;
+            reason = "";
+            synchronized (LOCK) {
+                filled = 0;
+                cursor = 0;
+            }
+        }
+
         long p99;
         synchronized (LOCK) {
+            observed++;
+            // Ignore the warm-up window: those samples are dominated by graph construction and say
+            // nothing about steady-state cost.
+            if (observed <= WARMUP_CALLS) return;
             us[cursor] = micros;
             cursor = (cursor + 1) % WINDOW;
             if (filled < WINDOW) filled++;
