@@ -761,6 +761,22 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("terrain")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] terrain " + NpuTerrainHook.summary()
+                                    + " | lattice " + NpuTerrainAccel.CELL_W + "x" + NpuTerrainAccel.CELL_H
+                                    + " | noise feature " + (NpuStats.NOISE.enabled ? "on" : "off");
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log(l);
+                            return 1;
+                        })
+                        .then(Commands.literal("reset").executes(context -> {
+                            NpuStats.NOISE.calls.set(0); NpuStats.NOISE.cells.set(0);
+                            NpuStats.NOISE.npuUs.set(0); NpuStats.NOISE.hostUs.set(0);
+                            context.getSource().sendSuccess(() -> Component.literal("[NPU] terrain counters cleared"), false);
+                            return 1;
+                        })))
                 .then(Commands.literal("batch")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
