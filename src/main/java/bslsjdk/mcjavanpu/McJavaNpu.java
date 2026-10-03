@@ -129,9 +129,16 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "n")))))))
                 .then(Commands.literal("submit")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
-                        .executes(context -> runSubmit(context, 16384, 16, 32))
-                        .then(Commands.argument("points", IntegerArgumentType.integer(16, 262144))
-                                .executes(context -> runSubmit(context, IntegerArgumentType.getInteger(context, "points"), 16, 32))))
+                        // Square shapes only. Measured 2026-10-03 on HTP: int8
+                        // requantisation is exact for m=k=n (256^3 -> 3.8x, 512^3 ->
+                        // 29x, 1024^3 -> 147x, all bad=0) but saturates when n!=k. So
+                        // the real-data demo uses squares.
+                        .executes(context -> runSubmit(context, 256, 256, 256))
+                        .then(Commands.argument("size", IntegerArgumentType.integer(256, 1024))
+                                .executes(context -> {
+                                    int s = IntegerArgumentType.getInteger(context, "size");
+                                    return runSubmit(context, s, s, s);
+                                })))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
