@@ -2,6 +2,9 @@
   "required": true,
   "package": "bslsjdk.mcjavanpu.mixin",
   "compatibilityLevel": "JAVA_25",
+  "mixins": [
+    "LightEngineMixin"
+  ],
   "client": [
     "PauseScreenMixin",
     "ScreenAccessor"
