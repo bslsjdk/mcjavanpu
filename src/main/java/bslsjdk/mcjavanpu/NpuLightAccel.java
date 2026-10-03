@@ -107,6 +107,22 @@ public final class NpuLightAccel {
     }
 
     /**
+     * MANY distinct blocks in ONE call: `a` is m*CELLS, row r is one 8x8x8 field.
+     *
+     * This is the shape that replaces multi-threaded chunk work. Device cost barely
+     * moves as m grows (measured: m=100 and m=257 both ~24ms at k=n=256), so folding
+     * N chunks into a single batch is effectively free -- which is exactly why
+     * batching beats parallelising here.
+     */
+    public static Result propagateBatch(byte[] a, int m) {
+        if (m <= 0) m = 1;
+        if (a == null || a.length < m * CELLS) {
+            return new Result(false, "A_TOO_SHORT need=" + (m * CELLS), 0, 0, 0, 0f, m, CELLS, CELLS);
+        }
+        return run(a, buildOperator(), m, CELLS, CELLS);
+    }
+
+    /**
      * Synthetic batch: `blocks` independent 8x8x8 light fields with values 0..15.
      */
     public static Result propagate(int blocks) {
