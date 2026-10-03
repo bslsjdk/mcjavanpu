@@ -107,6 +107,16 @@ public final class NpuChunkAuto {
 
     /** Called every server tick. Drains at most one submission's worth per call. */
     public static void onServerTick(Object server) {
+        long __t0 = NpuSelfCost.tickStart();
+        try {
+            onServerTickInner(server);
+        } finally {
+            NpuSelfCost.tickEnd(__t0);
+            NpuSelfCost.maybeReport();
+        }
+    }
+
+    private static void onServerTickInner(Object server) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
         ticksSinceFlush++;
