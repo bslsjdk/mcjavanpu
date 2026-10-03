@@ -54,7 +54,19 @@ public final class NpuStats {
     public static final Feature LIGHT  = new Feature("light",  "light",  true);
     public static final Feature CHUNK  = new Feature("chunk",  "chunk",  true);
     public static final Feature NOISE  = new Feature("noise",  "noise",  false);
-    public static final Feature BLOCKS = new Feature("blocks", "blocks", false);
+    /**
+     * Terrain feature.
+     *
+     * This defaulted to false, and the density mixin gates on it - so with chunkMode=npu the whole
+     * terrain path returned at the first line and never asked the NPU for anything. The log said it
+     * plainly once the heartbeat was extended:
+     *
+     *   [off] blocks calls=0
+     *
+     * The mode setting is what should decide whether terrain is accelerated. This flag is just the
+     * in-game switch for measurement, so it must not default to off.
+     */
+    public static final Feature BLOCKS = new Feature("blocks", "blocks", true);
 
     public static final Feature[] ALL = { LIGHT, CHUNK, NOISE, BLOCKS };
 
