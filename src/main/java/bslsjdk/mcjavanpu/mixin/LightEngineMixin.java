@@ -5,7 +5,7 @@ import net.minecraft.world.level.lighting.LightEngine;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
-import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+import org.spongepowered.asm.mixin.injection.callback.CallbackInfoReturnable;
 
 /**
  * Hooks the one place that sees every light update: LightEngine.runLightUpdates().
@@ -18,7 +18,7 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 public abstract class LightEngineMixin {
 
     @Inject(method = "runLightUpdates", at = @At("HEAD"), require = 0)
-    private void mcjavanpu$onRunLightUpdates(CallbackInfo ci) {
+    private void mcjavanpu$onRunLightUpdates(CallbackInfoReturnable<Integer> cir) {
         NpuLightHook.onLightUpdate();
     }
 }
