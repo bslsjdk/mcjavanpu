@@ -55,6 +55,13 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("区块合并半径：" + foldLabel()), b -> toggleConfig("lightFoldRadius"))
                 .bounds(cx - 100, y + 182, 200, 20).build());
 
+        // Three-way modes: the game's own path, full NPU ownership, or NPU assist.
+        addRenderableWidget(Button.builder(Component.literal("光照模式：" + NpuConfig.modeLabel(cfg().lightMode)), b -> toggleConfig("lightMode"))
+                .bounds(cx - 100, y + 208, 200, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal("区块模式：" + NpuConfig.modeLabel(cfg().chunkMode)), b -> toggleConfig("chunkMode"))
+                .bounds(cx - 100, y + 234, 200, 20).build());
+
         refresh();
     }
 
