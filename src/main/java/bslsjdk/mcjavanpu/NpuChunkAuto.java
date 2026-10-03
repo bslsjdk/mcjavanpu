@@ -48,6 +48,7 @@ public final class NpuChunkAuto {
             // ChunkPos is a record in this version, so its accessors are x()/z().
             int x = chunk.getPos().x();
             int z = chunk.getPos().z();
+            NpuBatchManager.record(x, z);
             // Pack the chunk column so the flush can find its sections later.
             PENDING.add((((long) x) << 32) ^ (z & 0xFFFFFFFFL));
         } catch (Throwable t) {
