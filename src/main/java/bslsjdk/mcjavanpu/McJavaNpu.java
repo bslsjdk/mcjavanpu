@@ -293,6 +293,28 @@ public final class McJavaNpu implements ModInitializer {
     }
 
     /**
+     * Start a sampling profile in the background and drop the ranked result in the log.
+     * Deliberately asynchronous: a profiler that blocks the thread it is measuring lies.
+     */
+    private static int runProfile(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int seconds) {
+        if (NpuProfiler.isRunning()) {
+            final String l = "[NPU] profile already running";
+            context.getSource().sendSuccess(() -> Component.literal(l), false);
+            return 0;
+        }
+        NpuLog.log("profile start: " + seconds + "s");
+        Thread t = new Thread(() -> {
+            String r = NpuProfiler.sample(seconds);
+            NpuLog.log("profile done\n" + r);
+        }, "npu-profile");
+        t.setDaemon(true);
+        t.start();
+        final String line = "[NPU] profiling for " + seconds + "s - top frames will land in logs/mcjavanpu-npu.log";
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        return 1;
+    }
+
+    /**
      * Force the game to throw its light away and build it again, for (2r+1)^2 sections.
      *
      * Without this, switching a mode changes nothing you can see: chunks that are
@@ -739,6 +761,11 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("profile")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runProfile(context, 10))
+                        .then(Commands.argument("seconds", IntegerArgumentType.integer(1, 60))
+                                .executes(context -> runProfile(context, IntegerArgumentType.getInteger(context, "seconds")))))
                 .then(Commands.literal("reloadchunks")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> runReloadChunks(context, 2))
