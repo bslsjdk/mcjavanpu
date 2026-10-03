@@ -52,6 +52,7 @@ public final class NpuChunkAuto {
         if (cfg == null || !cfg.enabled) return;
         if ("vanilla".equalsIgnoreCase(cfg.lightMode) && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
         TOTAL_CHUNKS.incrementAndGet();
+        NpuChunkWork.setLevel(world);
         try {
             if (PENDING.size() >= PENDING_CAP) {
                 // Queue is saturated. Shed load instead of blocking the world load.
@@ -78,10 +79,13 @@ public final class NpuChunkAuto {
         if (cfg == null || !cfg.enabled) return;
         ticksSinceFlush++;
         int size = PENDING.size();
-        if (size == 0) return;
-        boolean ready = size >= BATCH_MIN || ticksSinceFlush >= BATCH_TICKS;
-        if (!ready) return;
-        flush(size);
+        if (size > 0) {
+            boolean ready = size >= BATCH_MIN || ticksSinceFlush >= BATCH_TICKS;
+            if (ready) flush(size);
+        }
+        // Always drain at a fixed, small rate. This is the only place NPU chunk work runs,
+        // and it runs on the server thread, so the rate limit is what keeps loading smooth.
+        NpuWorkQueue.pump();
     }
 
     /**
@@ -91,32 +95,39 @@ public final class NpuChunkAuto {
      */
     private static void flush(int size) {
         int take = Math.min(size, CHUNKS_PER_SUBMIT);
+        java.util.List<long[]> slice = new java.util.ArrayList<>(take);
         int moved = 0;
         var it = PENDING.iterator();
         while (it.hasNext() && moved < take) {
-            it.next();
+            long packed = it.next();
             it.remove();
+            slice.add(new long[]{packed >> 32, (int) packed});
             moved++;
         }
         ticksSinceFlush = 0;
         lastBatchSize = moved;
         if (moved == 0) return;
         TOTAL_BATCHES.incrementAndGet();
-        NpuLog.log("chunk batch: submitted=" + moved + " pending=" + PENDING.size()
-                + " (total " + TOTAL_CHUNKS.get() + " loaded, batch #" + TOTAL_BATCHES.get()
-                + ", dropped=" + DROPPED.get() + " skipped=" + SKIPPED.get() + ")");
+        NpuWorkQueue.submit(slice);
+        if (TOTAL_BATCHES.get() % 8 == 1) {
+            NpuLog.log("chunk batch: submitted=" + moved + " pending=" + PENDING.size()
+                    + " (total " + TOTAL_CHUNKS.get() + " loaded, batch #" + TOTAL_BATCHES.get()
+                    + ", dropped=" + DROPPED.get() + " skipped=" + SKIPPED.get() + ")");
+        }
     }
 
     public static String summary() {
         return "chunks_seen=" + TOTAL_CHUNKS.get() + " batches=" + TOTAL_BATCHES.get()
                 + " pending=" + PENDING.size() + "/" + PENDING_CAP
                 + " last_batch=" + lastBatchSize
-                + " dropped=" + DROPPED.get() + " skipped=" + SKIPPED.get();
+                + " dropped=" + DROPPED.get() + " skipped=" + SKIPPED.get()
+                + " | " + NpuWorkQueue.summary();
     }
 
     /** Clears the queue; used by /npu batch reset. */
     public static void reset() {
         PENDING.clear();
+        NpuWorkQueue.clear();
         ticksSinceFlush = 0;
     }
 }
