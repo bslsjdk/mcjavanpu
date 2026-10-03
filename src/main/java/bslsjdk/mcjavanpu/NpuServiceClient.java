@@ -76,6 +76,11 @@ public final class NpuServiceClient {
         return request("CAPABILITIES");
     }
 
+    /** Deterministic m x k times k x n matmul executed on the HTP service. */
+    public static String matMul(int m, int k, int n) {
+        return request("EXEC_MATMUL " + m + " " + k + " " + n);
+    }
+
     public static String add(float[] a, float[] b) {
         if (a == null || b == null || a.length == 0 || a.length != b.length || a.length > 1024)
             return "ERR ADD_SIZE";
