@@ -83,6 +83,12 @@ public final class NpuRuntime {
         return NpuServiceClient.add(a,b);
     }
 
+    /** Deterministic matmul on the persistent HTP service; reply carries cpu_us and speedup. */
+    public static String matMul(int m,int k,int n){
+        if(!isAvailable()) return "ERR MCNPU_OFFLINE "+getDeviceInfo();
+        return NpuServiceClient.matMul(m,k,n);
+    }
+
     public static synchronized void shutdown(){HtpBackend.getInstance().close();}
 
     static synchronized void shutdownInternal(){
