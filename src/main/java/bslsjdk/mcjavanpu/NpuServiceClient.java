@@ -230,10 +230,11 @@ public final class NpuServiceClient {
             try {
                 if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
                 out.write(("SUBMITBIN_MATMUL8 " + m + " " + k + " " + n + " " + A.length + " " + B.length + "\n").getBytes(StandardCharsets.UTF_8));
-                long tFlush0 = System.nanoTime();
                 out.write(A);
                 out.write(B);
+                long tFlush0 = System.nanoTime();
                 out.flush();
+                long tAfterSend = System.nanoTime();
                 String line = readLineUtf8(in);
                 if (line == null) throw new EOFException("service closed connection");
                 if (!line.startsWith("OK BIN_SUBMIT")) return new MatMulResult(0, null, 0, line);
