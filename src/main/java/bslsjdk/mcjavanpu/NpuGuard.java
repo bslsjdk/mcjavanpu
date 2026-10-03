@@ -90,16 +90,33 @@ public final class NpuGuard {
         }
     }
 
-    /** Record a failed call. Enough in a row and the NPU is assumed gone. */
+    /**
+     * Record a failed call.
+     *
+     * Not every failure means the service is unhealthy. A caller asking for a
+     * shape that cannot be expressed, or passing a short buffer, is a bug in the
+     * caller and must not disable the NPU for everything else. Only transport and
+     * availability failures count towards backing off.
+     */
     public static void recordFailure(String why) {
         totalCalls.incrementAndGet();
         if (!NpuConfig.get().guardEnabled) return;
         if (degraded) return;
-        // Count consecutive failures on a simple decaying basis.
-        long now = System.currentTimeMillis();
-        if (now - degradedAtMs > 30_000L) degradedAtMs = now;
-        lastProbeMs = now;
-        degrade("ipc failure: " + why);
+
+        String e = why == null ? "" : why;
+        boolean transport = e.startsWith("SERVICE_")
+                || e.startsWith("MCNPU_OFFLINE")
+                || e.contains("SocketTimeout")
+                || e.contains("ConnectException")
+                || e.contains("closed");
+        if (!transport) {
+            // Caller-side error: worth logging once, not worth disabling anything.
+            if (NpuConfig.get().debugLog) NpuLog.warn("guard: non-transport failure ignored: " + e);
+            return;
+        }
+
+        lastProbeMs = System.currentTimeMillis();
+        degrade("transport failure: " + e);
     }
 
     private static void degrade(String why) {
