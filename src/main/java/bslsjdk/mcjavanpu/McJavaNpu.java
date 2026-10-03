@@ -868,6 +868,36 @@ public final class McJavaNpu implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("preload")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuPreload.summary();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log(l);
+                            return 1;
+                        })
+                        .then(Commands.literal("on")
+                                .executes(context -> {
+                                    NpuPreload.setEnabled(true);
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("[NPU] preload on"), false);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("off")
+                                .executes(context -> {
+                                    NpuPreload.setEnabled(false);
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("[NPU] preload off"), false);
+                                    return 1;
+                                }))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(1, 8))
+                                .executes(context -> {
+                                    int r = IntegerArgumentType.getInteger(context, "radius");
+                                    NpuPreload.setRadius(r);
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("[NPU] preload radius " + r), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("gate")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
