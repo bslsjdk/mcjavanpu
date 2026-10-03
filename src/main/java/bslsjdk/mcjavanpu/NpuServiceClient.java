@@ -1,70 +1,63 @@
 package bslsjdk.mcjavanpu;
 
 import java.io.*;
-import java.nio.file.Files;
-import java.nio.file.Path;
-import java.nio.file.StandardCopyOption;
+import java.net.InetSocketAddress;
+import java.net.Socket;
+import java.nio.charset.StandardCharsets;
 
 public final class NpuServiceClient {
-    private static final String NATIVE_NAME = "mcjavanpu_native";
-    private static volatile String nativeLoadError;
+    private static final String HOST = "127.0.0.1";
+    private static final int PORT = 38761;
+    private static final int CONNECT_TIMEOUT_MS = 1500;
+    private static final int READ_TIMEOUT_MS = 3000;
 
-    static {
-        loadNative();
-    }
+    private static Socket socket;
+    private static BufferedWriter out;
+    private static BufferedReader in;
 
     private NpuServiceClient() {}
 
-    private static void loadNative() {
-        try {
-            try {
-                System.loadLibrary(NATIVE_NAME);
-                return;
-            } catch (Throwable ignored) {
-            }
-
-            String arch = System.getProperty("os.arch", "").toLowerCase();
-            String resource;
-            if (arch.contains("aarch64") || arch.contains("arm64")) {
-                resource = "/natives/arm64-v8a/libmcjavanpu_native.so";
-            } else {
-                nativeLoadError = "unsupported_arch_" + arch;
-                return;
-            }
-
-            try (InputStream in = NpuServiceClient.class.getResourceAsStream(resource)) {
-                if (in == null) {
-                    nativeLoadError = "missing_native_resource";
-                    return;
-                }
-                Path tmp = Files.createTempFile("mcjavanpu-", ".so");
-                Files.copy(in, tmp, StandardCopyOption.REPLACE_EXISTING);
-                tmp.toFile().deleteOnExit();
-                System.load(tmp.toAbsolutePath().toString());
-            }
-        } catch (Throwable t) {
-            nativeLoadError = t.getClass().getSimpleName() + ":" + String.valueOf(t.getMessage());
-        }
+    private static synchronized void close() {
+        try { if (socket != null) socket.close(); } catch (Throwable ignored) {}
+        socket = null;
+        out = null;
+        in = null;
     }
 
-    private static native String nativeRequest(String command);
+    private static synchronized void connect() throws IOException {
+        close();
+        Socket s = new Socket();
+        s.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
+        s.setSoTimeout(READ_TIMEOUT_MS);
+        s.setTcpNoDelay(true);
+        socket = s;
+        out = new BufferedWriter(new OutputStreamWriter(s.getOutputStream(), StandardCharsets.UTF_8));
+        in = new BufferedReader(new InputStreamReader(s.getInputStream(), StandardCharsets.UTF_8));
+    }
 
-    private static native void nativeClose();
-
-    public static String request(String command) {
+    public static synchronized String request(String command) {
         if (command == null || command.isEmpty()) return "ERR EMPTY_COMMAND";
-        if (nativeLoadError != null) return "ERR NATIVE_UNAVAILABLE " + nativeLoadError;
-        try {
-            return nativeRequest(command);
-        } catch (Throwable t) {
-            return "ERR NATIVE_RUNTIME " + t.getClass().getSimpleName();
+        String lastError = "unknown";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
+                out.write(command);
+                out.write('\n');
+                out.flush();
+                String line = in.readLine();
+                if (line == null) throw new EOFException("service closed connection");
+                return line;
+            } catch (Throwable t) {
+                close();
+                String m = t.getMessage();
+                lastError = t.getClass().getSimpleName() + (m == null ? "" : "(" + m + ")");
+            }
         }
+        return "ERR SERVICE_UNAVAILABLE " + lastError;
     }
 
-    public static void close() {
-        if (nativeLoadError == null) {
-            try { nativeClose(); } catch (Throwable ignored) {}
-        }
+    public static synchronized void closeAll() {
+        close();
     }
 
     public static boolean isAvailable() {
