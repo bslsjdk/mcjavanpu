@@ -49,11 +49,24 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("详细日志：" + onOff(cfg().debugLog)), b -> toggleConfig("debugLog"))
                 .bounds(cx - 100, y + 156, 200, 20).build());
 
+        // Chunk-fold radius. 0 = off, 1 = 3x3 sections, 2 = 5x5, 3 = 7x7, 4 = 9x9.
+        // This is the knob for "how many chunks go into one NPU call": bigger batches
+        // amortise the fixed cost better, but the stall when one lands is longer.
+        addRenderableWidget(Button.builder(Component.literal("区块合并半径：" + foldLabel()), b -> toggleConfig("lightFoldRadius"))
+                .bounds(cx - 100, y + 182, 200, 20).build());
+
         refresh();
     }
 
     private static NpuConfig cfg() { return NpuConfig.get(); }
     private static String onOff(boolean b) { return b ? "开" : "关"; }
+
+    private static String foldLabel() {
+        int r = cfg().lightFoldRadius;
+        if (r <= 0) return "关";
+        int side = 2 * r + 1;
+        return side + "x" + side + "（" + (side * side) + " 区块）";
+    }
 
     private void toggleConfig(String key) {
         cfg().toggle(key);
