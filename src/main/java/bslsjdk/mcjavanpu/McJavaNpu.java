@@ -19,6 +19,12 @@ public final class McJavaNpu implements ModInitializer {
         System.out.println("[MCJavaNPU] initialized");
     }
 
+    private static int runMatMulInt8(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int m, int k, int n) {
+        String result = NpuRuntime.matMulInt8(m, k, n);
+        context.getSource().sendSuccess(() -> Component.literal("[NPU] " + result), false);
+        return result.startsWith("OK ") ? 1 : 0;
+    }
+
     private static int runMatMul(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int m, int k, int n) {
         String result = NpuRuntime.matMul(m, k, n);
         context.getSource().sendSuccess(() -> Component.literal("[NPU] matmul=" + result), false);
@@ -57,6 +63,22 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "m"),
                                                         IntegerArgumentType.getInteger(context, "k"),
                                                         IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("matmul8")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runMatMulInt8(context, 256, 256, 256))
+                        .then(Commands.argument("m", IntegerArgumentType.integer(16, 1024))
+                                .then(Commands.argument("k", IntegerArgumentType.integer(16, 1024))
+                                        .then(Commands.argument("n", IntegerArgumentType.integer(16, 1024))
+                                                .executes(context -> runMatMulInt8(context,
+                                                        IntegerArgumentType.getInteger(context, "m"),
+                                                        IntegerArgumentType.getInteger(context, "k"),
+                                                        IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("info")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            context.getSource().sendSuccess(() -> Component.literal("[NPU] " + NpuRuntime.getDeviceInfo()), false);
+                            return 1;
+                        }))
                 .then(Commands.literal("benchmark").requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.benchmark();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] benchmark=" + result.name()
