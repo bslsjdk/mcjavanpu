@@ -761,6 +761,20 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("noisecmp")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuNoiseCompare.run(12345L, 4096).replace("\n", " | ");
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            return 1;
+                        })
+                        .then(Commands.argument("seed", com.mojang.brigadier.arguments.LongArgumentType.longArg())
+                                .executes(context -> {
+                                    long sd = com.mojang.brigadier.arguments.LongArgumentType.getLong(context, "seed");
+                                    final String l = "[NPU] " + NpuNoiseCompare.run(sd, 4096).replace("\n", " | ");
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("tengen")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
