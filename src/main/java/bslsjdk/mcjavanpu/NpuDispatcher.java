@@ -112,6 +112,7 @@ public final class NpuDispatcher {
         int m = sh[0], k = sh[1], n = sh[2];
 
         final long t0 = System.nanoTime();
+        final long prep0 = t0;
 
         if (m == mActual && k == kActual && n == nActual) {
             return timed(NpuRuntime.submitMatMulInt8(a, b, mActual, kActual, nActual), t0);
@@ -123,11 +124,14 @@ public final class NpuDispatcher {
         byte[] B = new byte[k * n];
         for (int p = 0; p < kActual; p++) System.arraycopy(b, p * nActual, B, p * n, nActual);
 
+        NpuServiceClient.recordPrepareUs((System.nanoTime() - prep0) / 1000L);
         NpuRuntime.MatMulResult r = NpuRuntime.submitMatMulInt8(A, B, m, k, n);
         if (!r.ok()) { reportFail(t0, r.error()); return r; }
 
+        long assemble0 = System.nanoTime();
         byte[] c = new byte[mActual * nActual];
         for (int i = 0; i < mActual; i++) System.arraycopy(r.c(), i * n, c, i * nActual, nActual);
+        NpuServiceClient.recordAssembleUs((System.nanoTime() - assemble0) / 1000L);
 
         return timed(new NpuRuntime.MatMulResult(r.scaleC(), c, r.us(), null), t0);
     }
