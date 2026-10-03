@@ -81,3 +81,63 @@ If it never opens: that is the answer, not a bug. Look at `first_bad`, and at
 - CPU trilinear baseline (C++ -O3): 0.042 us/point. NPU on the same shape: 2.1 us/point.
   Per-point noise interpolation is too light for the NPU; that is why the matrix route for Perlin
   was dropped, and why the win has to come from batching, not from per-point offload.
+
+---
+
+## Yuanbao - 2026-10-04 (latency + light path)
+
+Added after reading the uploaded logs. Full write-up in `YUANBAO_LATENCY_ANALYSIS.md`
+(same file is in mcnpu/docs so GPT can read it; DeepSeek has no token so everything
+goes through this repo).
+
+### The number that matters: npu_us is not the latency
+
+`wall_ms` was printed alongside `npu_us` all along. They disagree by 2.4x to 24x:
+
+| session | npu_ms | cpu_ms | wall_ms | cpu % of wall |
+|---|---|---|---|---|
+| 19:00 steady | 9.8 | 203.2 | 234 | 87% |
+| 19:14 steady | 17.7 | 106.6 | 135 | 79% |
+| 19:39 steady | 11.5 | 44.1 | 59 | 75% |
+| 19:43 steady | 14.0 | 88.3 | 116 | 76% |
+
+Across all eight runs cpu is **77% of wall**. That is the `O(m*k*n)` Java reference
+loop, which now runs opt-in only (`7288dde952`). Warmup steady should land at
+**15-31ms** instead of 59-234ms.
+
+**Anyone optimising IPC or the protocol: check that first.** Before the fix ~90% of
+the time was not in the NPU channel at all.
+
+### The light path is finished - not broken
+
+`lightapply` reported `bad=0/65536` (exactly correct) with `written=0` (nothing
+brighter than vanilla). A linear smoothing operator over a converged BFS field
+cannot produce a higher value. That is the algorithm's result, not a defect, so
+there is no root cause to find.
+
+Actions taken:
+- `NpuConfig` light default is now consistently `vanilla` (was `vanilla` on the
+  field but `assist` in load - a fresh config silently enabled it) (`399e1545b2`)
+- `NpuChunkWork.runForChunk` returns immediately when lightMode is vanilla
+  (`01c0f27bff`) - this is the chunk-load path, the worst moment to spend 10-38ms
+- zero-write detection already auto-disables it after 6 empty calls
+
+### Answering "frame rate is bad"
+
+`NpuSelfCost` (`994396f805`) times our own tick / chunk / sampler hooks:
+
+```
+self_cost us: tick avg=? max=? n=? | chunk avg=? n=? | sampler avg=? max=? n=?
+```
+
+Near zero means the problem is not us (sodium, shaders, render distance, thermal)
+and no NPU work will change it - which is a useful answer. **spark is installed**,
+so `/spark profiler` will settle it far better than any of us guessing.
+
+### Not doing: NPU for rendering / particles / culling
+
+sodium + lithium + ferritecore + moreculling + entityculling are already installed,
+so the CPU side is professionally optimised. NPU round trip is 10-38ms against a
+16.6ms frame, and culling/particle work is tens of microseconds - moving it is a
+100-500x slowdown. Those also cannot use a stale result, unlike light or terrain.
+Preload (`NpuPreload`, `da938e4bd9`) is the one thing that does qualify.
