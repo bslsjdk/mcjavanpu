@@ -45,6 +45,27 @@ public final class NpuTerrainGate {
     public static String lastReason() { return lastReason; }
 
     /**
+     * Is it worth spending any CPU computing a volume at all?
+     *
+     * This is the counterpart to allowWrite, and it is the one that actually saves
+     * frame time.
+     *
+     * allowWrite() only decides whether a RESULT may be used. By the time it is
+     * called the work is already done. But the whole terrain prefetch pipeline -
+     * requestWorkSet queuing up to 81 chunks, the background worker, and
+     * NpuTerrainVanilla.fill() evaluating the complete density tree in Java - runs
+     * to produce that result. With the gate closed (the default) every bit of that
+     * is spent and then thrown away, because allowWrite refuses the write.
+     *
+     * So the pipeline has to ask THIS before it starts, not just before it writes.
+     * Closed gate -> no queueing, no background evaluation, no IPC. The mod costs
+     * nothing until someone proves the interpreter matches vanilla and opens it.
+     */
+    public static boolean worthComputing() {
+        return takeoverAllowed && NpuTerrainVanilla.ready() && NpuDfJson.lastUnsupported() == 0;
+    }
+
+    /**
      * Can this volume be written over the vanilla result?
      *
      * Called immediately before any ci.cancel() in the density sampler mixin.
@@ -88,6 +109,7 @@ public final class NpuTerrainGate {
 
     public static String summary() {
         return "gate=" + (takeoverAllowed ? "OPEN" : "CLOSED")
+                + (worthComputing() ? " computing" : " idle(no compute)")
                 + " checked=" + CHECKED.get()
                 + " allowed=" + ALLOWED.get()
                 + " refused=" + REFUSED.get()
