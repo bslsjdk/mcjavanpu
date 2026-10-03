@@ -198,8 +198,20 @@ public final class NpuTerrainAssist {
         TAKEOVER_CACHE.put(key(cx, cz, minY), vol);
     }
 
+    /**
+     * Takeover lookup: same store as assist.
+     *
+     * The two modes differ in who is allowed to run vanilla (takeover says nobody), not in what a
+     * finished volume looks like. Both therefore post into and read from one cache, so a volume
+     * built for an assist prefetch is usable by takeover and vice versa.
+     */
     public static float[] peekTakeover(int cx, int cz, int minY) {
-        return TAKEOVER_CACHE.get(key(cx, cz, minY));
+        float[] parked = TAKEOVER_CACHE.get(key(cx, cz, minY));
+        if (parked != null) return parked;
+        Prepared p = CACHE.get(key(cx, cz, minY));
+        if (p == null) return null;
+        if (p.density.length != DEF_SX * DEF_SY * DEF_SZ) return null;
+        return p.density;
     }
 
     public static int takeoverCached() { return TAKEOVER_CACHE.size(); }
@@ -212,7 +224,11 @@ public final class NpuTerrainAssist {
     public static float[] take(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return null;
-        if (!"assist".equalsIgnoreCase(cfg.chunkMode)) return null;
+        // Takeover queues here too. This is the whole point of the rework: the game thread must
+        // never wait for the NPU, in ANY mode. Takeover wants NPU numbers rather than vanilla's,
+        // and the only way to have those without stalling is to queue the work, return "not ready"
+        // now, and let the background batcher have it done before the request comes back around.
+        if (!"assist".equalsIgnoreCase(cfg.chunkMode) && !"npu".equalsIgnoreCase(cfg.chunkMode)) return null;
         if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) return null;
         if (!NpuServiceClient.healthy()) return null;
 
