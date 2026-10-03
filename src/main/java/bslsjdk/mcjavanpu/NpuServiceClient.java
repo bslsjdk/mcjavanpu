@@ -127,6 +127,7 @@ public final class NpuServiceClient {
                 if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
                 out.write((command + "\n").getBytes(StandardCharsets.UTF_8));
                 out.flush();
+                long tAfterSend = System.nanoTime();
                 String line = readLineUtf8(in);
                 if (line == null) throw new EOFException("service closed connection");
                 clearCooldown();
@@ -167,6 +168,38 @@ public final class NpuServiceClient {
      * in-lock duration separately is the only way to tell "the service is slow" apart from "we
      * queued behind someone else", and those two need opposite fixes.
      */
+    private static final java.util.concurrent.atomic.AtomicLong SEND_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong WAIT_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong RECV_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong SERVICE_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong CALLS =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static volatile long LAST_SERVICE_US;
+
+    /**
+     * Where a submission actually goes.
+     *
+     * send  - building and pushing the request bytes
+     * wait  - flush to first response byte. If this dominates, the service side is the target
+     * recv  - draining the result tensor
+     * svc   - the service's own QNN timing, for comparison against wait
+     *
+     * A large gap between wait and svc means the time is not being spent computing.
+     */
+    public static String ioSummary() {
+        long n = Math.max(1, CALLS.get());
+        return "ipc_calls=" + CALLS.get()
+                + " send_avg_us=" + (SEND_US.get() / n)
+                + " wait_avg_us=" + (WAIT_US.get() / n)
+                + " recv_avg_us=" + (RECV_US.get() / n)
+                + " svc_avg_us=" + (SERVICE_US.get() / n)
+                + " svc_last_us=" + LAST_SERVICE_US;
+    }
+
     public static String lockSummary() {
         long n = IN_LOCK_N.get();
         long avg = n == 0 ? 0 : IN_LOCK_US.get() / n;
@@ -197,17 +230,29 @@ public final class NpuServiceClient {
             try {
                 if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
                 out.write(("SUBMITBIN_MATMUL8 " + m + " " + k + " " + n + " " + A.length + " " + B.length + "\n").getBytes(StandardCharsets.UTF_8));
+                long tFlush0 = System.nanoTime();
                 out.write(A);
                 out.write(B);
                 out.flush();
                 String line = readLineUtf8(in);
                 if (line == null) throw new EOFException("service closed connection");
                 if (!line.startsWith("OK BIN_SUBMIT")) return new MatMulResult(0, null, 0, line);
+                long tAfterHeader = System.nanoTime();
                 int cbytes = Integer.parseInt(field(line, "cbytes"));
                 float scaleC = Float.parseFloat(field(line, "scaleC"));
                 long us = Long.parseLong(field(line, "us"));
                 byte[] c = new byte[cbytes];
                 readFully(in, c, cbytes);
+                long tEnd = System.nanoTime();
+                // Split the round trip: send / service / receive. Without this the only number we
+                // had was the total, and "the service is slow" and "we waste time shuffling bytes"
+                // need opposite fixes. svc is the service's own QNN timing, for comparison.
+                SEND_US.addAndGet((tAfterSend - tFlush0) / 1000);
+                WAIT_US.addAndGet((tAfterHeader - tAfterSend) / 1000);
+                RECV_US.addAndGet((tEnd - tAfterHeader) / 1000);
+                SERVICE_US.addAndGet(us);
+                LAST_SERVICE_US = us;
+                CALLS.incrementAndGet();
                 clearCooldown();
                 healthy = true;
                 return new MatMulResult(scaleC, c, us, null);
