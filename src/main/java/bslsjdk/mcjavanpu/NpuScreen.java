@@ -62,6 +62,9 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("区块模式：" + NpuConfig.modeLabel(cfg().chunkMode)), b -> toggleConfig("chunkMode"))
                 .bounds(cx - 100, y + 234, 200, 20).build());
 
+        addRenderableWidget(Button.builder(Component.literal("功能与统计"), b -> Minecraft.getInstance().gui.setScreen(new NpuFeaturesScreen(this)))
+                .bounds(cx - 100, y + 260, 200, 20).build());
+
         refresh();
     }
 
