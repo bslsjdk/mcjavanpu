@@ -19,30 +19,10 @@ jobs:
           distribution: temurin
           java-version: "25"
 
-      - name: Setup Android SDK
-        uses: android-actions/setup-android@v4
-        with:
-          packages: ""
-
-      - name: Install Android NDK
-        run: |
-          sdkmanager --install "ndk;27.0.12077973"
-          echo "ANDROID_NDK_HOME=$ANDROID_SDK_ROOT/ndk/27.0.12077973" >> "$GITHUB_ENV"
-
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "9.6.0"
-
-      - name: Build native IPC client
-        run: |
-          mkdir -p build/generated/native/arm64-v8a
-          "$ANDROID_NDK_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android24-clang" \
-            -shared -fPIC -O2 -fvisibility=hidden \
-            -I"$JAVA_HOME/include" \
-            -I"$JAVA_HOME/include/linux" \
-            src/main/cpp/mcjavanpu_ipc.c \
-            -o build/generated/native/arm64-v8a/libmcjavanpu_native.so
 
       - name: Build Fabric mod
         run: gradle build --no-daemon
