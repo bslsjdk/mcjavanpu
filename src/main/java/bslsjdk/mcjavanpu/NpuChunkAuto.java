@@ -45,8 +45,8 @@ public final class NpuChunkAuto {
         if ("vanilla".equalsIgnoreCase(cfg.lightMode) && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
         TOTAL_CHUNKS.incrementAndGet();
         try {
-            int x = chunk.getPos().x;
-            int z = chunk.getPos().z;
+            int x = chunk.getPos().getX();
+            int z = chunk.getPos().getZ();
             // Pack the chunk column so the flush can find its sections later.
             PENDING.add((((long) x) << 32) ^ (z & 0xFFFFFFFFL));
         } catch (Throwable t) {
