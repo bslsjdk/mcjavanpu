@@ -99,10 +99,11 @@ public final class NpuTerrainGen {
         float[] feat = new float[m * K];
         float s1 = ((seed >>> 3) % 997) / 997f;
         float s2 = ((seed >>> 11) % 991) / 991f;
+        // Index order must match DensitySampler.sampleVolumeNaive: z outer, x middle, y inner.
         int i = 0;
-        for (int x = 0; x < sx; x++) {
-            for (int y = 0; y < sy; y++) {
-                for (int z = 0; z < sz; z++) {
+        for (int z = 0; z < sz; z++) {
+            for (int x = 0; x < sx; x++) {
+                for (int y = 0; y < sy; y++) {
                     features(feat, i * K, ox + x, oy + y, oz + z, s1, s2);
                     i++;
                 }
@@ -153,9 +154,9 @@ public final class NpuTerrainGen {
         for (int p = 0; p < m; p++) dens[p] = (dens[p] - mn) / span - 0.5f;
 
         int idx = 0;
-        for (int x = 0; x < sx; x++) {
-            for (int y = 0; y < sy; y++) {
-                for (int z = 0; z < sz; z++) {
+        for (int z = 0; z < sz; z++) {
+            for (int x = 0; x < sx; x++) {
+                for (int y = 0; y < sy; y++) {
                     dens[idx] += 0.9f - (oy + y) * 0.0055f;
                     idx++;
                 }
@@ -183,5 +184,17 @@ public final class NpuTerrainGen {
 
     public static String describe() {
         return String.format(Locale.ROOT, "terrain gen: K=%d, A[m x %d] * B[%d x 1]", K, K, K);
+    }
+
+    /**
+     * Fill a caller array (MC DensityBuffer order) with generated density.
+     * Returns the number of points written, or -1 if the NPU path was unavailable.
+     */
+    public static int fill(float[] out, int sx, int sy, int sz, int ox, int oy, int oz, long seed) {
+        Result r = generate(sx, sy, sz, ox, oy, oz, seed);
+        if (!r.usedNpu) return -1;
+        int n = Math.min(out.length, r.density.length);
+        System.arraycopy(r.density, 0, out, 0, n);
+        return n;
     }
 }
