@@ -150,6 +150,17 @@ public final class McJavaNpu implements ModInitializer {
         return bad == 0 ? 1 : 0;
     }
 
+    /** Real 8x8x8 voxel light propagation, batched through the NPU. */
+    private static int runLight(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int blocks) {
+        long t0 = System.nanoTime();
+        NpuLightAccel.Result r = NpuLightAccel.propagate(blocks);
+        long wallUs = (System.nanoTime() - t0) / 1000;
+        final String line = "[NPU] light " + r.summary() + " wall_us=" + wallUs;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        System.out.println("[MCJavaNPU] " + line);
+        return r.ok && r.bad == 0 ? 1 : 0;
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -216,6 +227,12 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "m"),
                                                         IntegerArgumentType.getInteger(context, "k"),
                                                         IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("light")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        // Batched light propagation: N blocks of 8x8x8 voxels in ONE NPU call.
+                        .executes(context -> runLight(context, 64))
+                        .then(Commands.argument("blocks", IntegerArgumentType.integer(1, 4096))
+                                .executes(context -> runLight(context, IntegerArgumentType.getInteger(context, "blocks")))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
