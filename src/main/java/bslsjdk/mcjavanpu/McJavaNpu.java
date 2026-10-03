@@ -14,9 +14,47 @@ public final class McJavaNpu implements ModInitializer {
 
     @Override
     public void onInitialize() {
-        Thread.ofVirtual().name("mcjavanpu-init").start(NpuRuntime::init);
+        NpuLog.log("mod initialised");
+        Thread.ofVirtual().name("mcjavanpu-init").start(McJavaNpu::boot);
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> registerCommands(dispatcher));
-        System.out.println("[MCJavaNPU] initialized");
+        NpuLog.log("dedicated log: " + NpuLog.getPathString());
+    }
+
+    /**
+     * Background bring-up. Runs at mod init: connect, read the switches, and if
+     * autoWarmup is on, build + calibrate the graphs before the player ever asks
+     * for anything. That is what makes the first real call fast instead of slow.
+     */
+    private static void boot() {
+        try {
+            NpuLog.log("boot: initialising runtime");
+            NpuRuntime.init();
+            boolean ok = NpuRuntime.isAvailable();
+            NpuLog.log("boot: available=" + ok + " device=" + NpuRuntime.getDeviceInfo());
+            if (!ok) { NpuLog.warn("boot: NPU service unavailable, staying idle"); return; }
+
+            NpuConfig cfg = NpuConfig.get();
+            NpuLog.log("boot: " + cfg.describe());
+            if (!cfg.enabled) { NpuLog.log("boot: disabled by config, skipping warmup"); return; }
+            if (!cfg.autoWarmup) { NpuLog.log("boot: autoWarmup off"); return; }
+
+            // Give the world / renderer time to come up so the warmup does not
+            // compete with chunk loading.
+            try { Thread.sleep(20000L); } catch (InterruptedException ie) { return; }
+
+            long t0 = System.nanoTime();
+            NpuLightAccel.Result r = NpuLightAccel.propagate(cfg.lightBatch);
+            long ms = (System.nanoTime() - t0) / 1000000L;
+            NpuLog.log("warmup first (build+calibrate): " + r.summary() + " wall_ms=" + ms);
+
+            long t1 = System.nanoTime();
+            NpuLightAccel.Result r2 = NpuLightAccel.propagate(cfg.lightBatch);
+            long ms2 = (System.nanoTime() - t1) / 1000000L;
+            NpuLog.log("warmup steady: " + r2.summary() + " wall_ms=" + ms2);
+            NpuLog.log("boot: done, graphs are hot");
+        } catch (Throwable t) {
+            NpuLog.error("boot failed", t);
+        }
     }
 
     /**
