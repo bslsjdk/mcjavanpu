@@ -785,8 +785,7 @@ public final class McJavaNpu implements ModInitializer {
                         })
                         .then(Commands.literal("dump")
                                 .executes(context -> {
-                                    NpuLog.log("telemetry dump
-" + NpuTelemetry.dump());
+                                    NpuLog.log("telemetry dump \n" + NpuTelemetry.dump());
                                     final String l = "[NPU] telemetry dump written to logs/mcjavanpu-npu.log";
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
