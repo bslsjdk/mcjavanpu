@@ -268,7 +268,7 @@ public final class NpuServiceClient {
             // Counted here, at the transport, not in the scheduler. A counter in the
             // scheduler would only prove that chunks were put in a list; this proves
             // a request actually left for the NPU.
-            NpuBatchMetrics.recordActualSubmit(m + "x" + k + "x" + n, r == null ? 0 : r.totalUs);
+            NpuBatchMetrics.recordActualSubmit(m + "x" + k + "x" + n, r == null ? 0 : r.us());
             return r;
         } finally {
             long us = (System.nanoTime() - t) / 1000;
