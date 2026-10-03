@@ -233,6 +233,10 @@ public final class NpuTerrainAssist {
                 }
                 if (CACHE.size() > CACHE_CAP * 2) CACHE.clear();
                 BUILT.addAndGet(n);
+                // What the scheduler claims to have handled. Paired with the submit
+                // counter at the transport, this is how we tell a real batch from a
+                // list of chunks that each made their own round trip.
+                NpuBatchMetrics.recordLogicalChunks(n);
                 BATCHES.incrementAndGet();
                 LAST_BATCH.set(n);
             } catch (InterruptedException ie) {
@@ -418,6 +422,8 @@ public final class NpuTerrainAssist {
                 + " batches=" + BATCHES.get() + " last_batch=" + LAST_BATCH.get()
                 + " queued=" + REQUESTED.size() + "/" + QUEUE_CAP
                 + " dropped=" + DROPPED.get() + " failed=" + FAILED.get()
+                + " skipped_gate=" + SKIPPED_GATE.get()
+                + " | " + NpuBatchMetrics.summary()
                 + (lastError.isEmpty() ? "" : " lastError=" + lastError);
     }
 
