@@ -3,6 +3,7 @@ package bslsjdk.mcjavanpu.mixin;
 import bslsjdk.mcjavanpu.NpuConfig;
 import bslsjdk.mcjavanpu.NpuStats;
 import bslsjdk.mcjavanpu.NpuTerrainAssist;
+import bslsjdk.mcjavanpu.NpuTerrainLattice;
 import bslsjdk.mcjavanpu.NpuTerrainGen;
 import bslsjdk.mcjavanpu.NpuTerrainHook;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
@@ -70,7 +71,7 @@ public abstract class DensitySamplerMixin {
         // Takeover: generate here and now, vanilla never runs.
         long seed = ox * 341873128712L ^ oz * 132897987541L ^ oy * 42317861L;
         long t0 = System.nanoTime();
-        NpuTerrainGen.Result r = NpuTerrainGen.generate(sx, sy, sz, ox, oy, oz, seed);
+        NpuTerrainLattice.Result r = NpuTerrainLattice.generate(sx, sy, sz, ox, oy, oz, seed);
         long wallUs = (System.nanoTime() - t0) / 1000;
 
         if (!r.usedNpu) {
@@ -81,7 +82,7 @@ public abstract class DensitySamplerMixin {
 
         int n = Math.min(buffer.size(), r.density.length);
         for (int i = 0; i < n; i++) buffer.set(i, r.density[i]);
-        NpuStats.BLOCKS.record(n, r.npuUs, wallUs);
+        NpuStats.BLOCKS.record(n, r.npuUs + r.interpUs, wallUs);
         ci.cancel();
     }
 }
