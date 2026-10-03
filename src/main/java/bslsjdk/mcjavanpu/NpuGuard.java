@@ -33,6 +33,17 @@ public final class NpuGuard {
     private static int filled;
     private static final Object LOCK = new Object();
 
+    /**
+     * Samples are ignored until this many calls have been seen.
+     *
+     * The first calls build the graphs for a shape and measured ~17 ms against an 8 ms budget. With
+     * a permanent p99 trip, that one cold sample condemned the feature for the rest of the session:
+     * guard degraded -> every request rejected -> p99 never improves. 8231 requests submitted, 0
+     * processed, while the service was up. Warm-up samples are therefore not evidence.
+     */
+    private static final int WARMUP_CALLS = 24;
+    private static int observed;
+
     /** Above this, one call is not worth it for a per-frame feature. */
     private static volatile long budgetUs = 8_000L;   // 8 ms
     private static volatile int failBudget = 3;
