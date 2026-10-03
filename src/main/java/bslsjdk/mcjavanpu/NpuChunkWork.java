@@ -85,6 +85,15 @@ public final class NpuChunkWork {
      * a skip just means this chunk was not accelerated.
      */
     public static boolean runForChunk(int cx, int cz) {
+        // Do not even read the light data if the result is known to be inert.
+        //
+        // The path was measured fully correct and completely ineffective: bad=0 across the board,
+        // written=0 on every call. A linear smoothing operator over an already-converged BFS light
+        // field cannot produce a brighter value than vanilla's, so this is an algorithm choice, not
+        // a defect. Detection lives in NpuLightAccel; acting on it has to happen here, before the
+        // section is read, otherwise the reads themselves are the remaining cost.
+        if (NpuLightAccel.isNoEffect()) return false;
+
         ServerLevel level = lastLevel;
         if (level == null) return false;
 
