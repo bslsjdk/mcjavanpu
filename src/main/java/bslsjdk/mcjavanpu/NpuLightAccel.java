@@ -275,6 +275,17 @@ public final class NpuLightAccel {
     public static Result propagateReal(byte[] cells, int blocks) {
         if (blocks <= 0) blocks = 1;
         int m = blocks, k = CELLS, n = CELLS;
+        // Stop paying for something that provably does nothing.
+        //
+        // The path was measured fully correct (bad=0) and completely ineffective (written=0): a linear
+        // smoothing operator applied to an already-converged BFS light field can never produce a value
+        // brighter than vanilla's. That is not a bug to chase, it is the wrong algorithm - it cost
+        // 37782us on device for zero visible change. noteWritten() already detects the situation; this
+        // is the check that makes it actually stop, instead of sitting in the UI as a statistic while
+        // every chunk keeps paying the price.
+        if (noEffect) {
+            return new Result(false, "NO_EFFECT", 0, 0, 0, 0f, m, k, n);
+        }
         if (cells == null || cells.length < CELLS) {
             return new Result(false, "CELLS_TOO_SHORT", 0, 0, 0, 0f, m, k, n);
         }
