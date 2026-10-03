@@ -24,7 +24,52 @@ public final class NpuChunkWork {
     /** Sections examined per chunk. The interesting light is near the surface, not at bedrock. */
     private static final int MAX_SECTIONS_PER_CHUNK = 4;
 
+    /**
+     * A 16^3 section is exactly eight 8^3 sub-blocks. Constant, so it is built once
+     * instead of on every call -- it used to be a local, which meant nine array
+     * allocations per chunk on the server tick.
+     */
+    private static final int[][] SUB = {{0,0,0},{8,0,0},{0,0,8},{8,0,8},{0,8,0},{8,8,0},{0,8,8},{8,8,8}};
+    private static final int SUB_COUNT = SUB.length;
+
     private static volatile ServerLevel lastLevel;
+
+    /**
+     * Resolved reflection handles.
+     *
+     * Class.getMethods() clones the entire Method array on every call (it has to,
+     * so callers cannot mutate the class's own array). This runs from
+     * NpuWorkQueue.pump() on the server tick, several times a second, and each call
+     * used to walk the full method list of the light engine, its listener and
+     * SectionPos four times over. Caching the resolved Method objects removes that
+     * entirely.
+     *
+     * Keyed on the actual classes, so switching worlds or dimensions -- where the
+     * engine instance can differ -- invalidates by itself.
+     */
+    private static volatile ReflectCache cache;
+    private static final Object CACHE_LOCK = new Object();
+
+    private static final class ReflectCache {
+        final Class<?> engineClass;
+        final Class<?> listenerClass;
+        final java.lang.reflect.Method getLayerListener;
+        final java.lang.reflect.Method getDataLayerData;
+        final java.lang.reflect.Method queueSectionData;
+        final java.lang.reflect.Method sectionPosOf;
+
+        ReflectCache(Class<?> ec, Class<?> lc, java.lang.reflect.Method a,
+                     java.lang.reflect.Method b, java.lang.reflect.Method c,
+                     java.lang.reflect.Method d) {
+            this.engineClass = ec; this.listenerClass = lc;
+            this.getLayerListener = a; this.getDataLayerData = b;
+            this.queueSectionData = c; this.sectionPosOf = d;
+        }
+
+        boolean matches(Class<?> ec, Class<?> lc) {
+            return engineClass == ec && listenerClass == lc;
+        }
+    }
 
     private NpuChunkWork() {}
 
@@ -53,46 +98,22 @@ public final class NpuChunkWork {
             if (!NpuServiceClient.healthy()) return false;
 
             // getLayerListener(LightLayer) -> LayerLightEventListener -> getDataLayerData(SectionPos)
-            Object listener = null;
-            for (java.lang.reflect.Method m : engine.getClass().getMethods()) {
-                if (m.getName().equals("getLayerListener") && m.getParameterCount() == 1
-                        && m.getParameterTypes()[0].isInstance(layer)) {
-                    listener = m.invoke(engine, layer);
-                    break;
-                }
-            }
+            Object listener = resolveListener(engine, layer);
             if (listener == null) return false;
 
-            java.lang.reflect.Method getData = null;
-            for (java.lang.reflect.Method m : listener.getClass().getMethods()) {
-                if (m.getName().equals("getDataLayerData") && m.getParameterCount() == 1
-                        && m.getParameterTypes()[0] == SectionPos.class) {
-                    getData = m;
-                    break;
-                }
-            }
-            if (getData == null) return false;
-
-            java.lang.reflect.Method spOf = SectionPos.class.getMethod("of", int.class, int.class, int.class);
-            java.lang.reflect.Method queue = null;
-            for (java.lang.reflect.Method m : engine.getClass().getMethods()) {
-                if (m.getName().equals("queueSectionData") && m.getParameterCount() == 3
-                        && m.getParameterTypes()[0].isInstance(layer)) {
-                    queue = m;
-                    break;
-                }
-            }
+            ReflectCache rc = resolve(engine.getClass(), listener.getClass());
+            if (rc == null) return false;
+            java.lang.reflect.Method getData = rc.getDataLayerData;
+            java.lang.reflect.Method spOf = rc.sectionPosOf;
+            java.lang.reflect.Method queue = rc.queueSectionData;
 
             // LevelHeightAccessor names these getMinSectionY/getMaxSectionY; there is no
             // getMinSection() in this version. Both are inclusive section coordinates.
             int minSec = level.getMinSectionY();
             int maxSec = level.getMaxSectionY();
 
-            // A 16^3 section is exactly 8 sub-blocks of 8^3, so one submission can carry all
-            // eight rows and the batch overhead is paid once per section instead of eight times.
-            final int[][] SUB = {{0,0,0},{8,0,0},{0,0,8},{8,0,8},{0,8,0},{8,8,0},{0,8,8},{8,8,8}};
-            final int SUB_COUNT = SUB.length;
-
+            // One submission carries all eight sub-blocks, so the batch overhead is paid
+            // once per section instead of eight times.
             int done = 0;
             for (int sy = maxSec - 1; sy >= minSec && done < MAX_SECTIONS_PER_CHUNK; sy--) {
                 Object sp = spOf.invoke(null, cx, sy, cz);
@@ -147,4 +168,83 @@ public final class NpuChunkWork {
             return false;
         }
     }
+
+    /**
+     * Returns the block-light listener for this engine.
+     *
+     * The listener's class is only known after the call returns, so the first
+     * invocation has to walk the method list; after that the resolved handle in
+     * the cache is invoked directly.
+     */
+    private static Object resolveListener(Object engine, Object layer) {
+        ReflectCache c = cache;
+        if (c != null && c.engineClass == engine.getClass() && c.getLayerListener != null
+                && c.getLayerListener.getParameterTypes()[0].isInstance(layer)) {
+            try { return c.getLayerListener.invoke(engine, layer); }
+            catch (Throwable ignored) { return null; }
+        }
+        try {
+            for (java.lang.reflect.Method m : engine.getClass().getMethods()) {
+                if (m.getName().equals("getLayerListener") && m.getParameterCount() == 1
+                        && m.getParameterTypes()[0].isInstance(layer)) {
+                    return m.invoke(engine, layer);
+                }
+            }
+        } catch (Throwable ignored) {}
+        return null;
+    }
+
+    /**
+     * Resolves and caches the reflection handles for this engine/listener pair.
+     * Returns null when a handle cannot be found; the caller treats that as "skip
+     * this chunk", and the vanilla light engine still owns the result.
+     */
+    private static ReflectCache resolve(Class<?> engineClass, Class<?> listenerClass) {
+        ReflectCache c = cache;
+        if (c != null && c.matches(engineClass, listenerClass)) return c;
+
+        synchronized (CACHE_LOCK) {
+            c = cache;
+            if (c != null && c.matches(engineClass, listenerClass)) return c;
+            try {
+                java.lang.reflect.Method getData = null;
+                for (java.lang.reflect.Method m : listenerClass.getMethods()) {
+                    if (m.getName().equals("getDataLayerData") && m.getParameterCount() == 1
+                            && m.getParameterTypes()[0] == SectionPos.class) {
+                        getData = m;
+                        break;
+                    }
+                }
+                if (getData == null) return null;
+
+                java.lang.reflect.Method spOf = SectionPos.class.getMethod("of", int.class, int.class, int.class);
+
+                java.lang.reflect.Method queue = null;
+                for (java.lang.reflect.Method m : engineClass.getMethods()) {
+                    if (m.getName().equals("queueSectionData") && m.getParameterCount() == 3) {
+                        queue = m;
+                        break;
+                    }
+                }
+
+                java.lang.reflect.Method gll = null;
+                for (java.lang.reflect.Method m : engineClass.getMethods()) {
+                    if (m.getName().equals("getLayerListener") && m.getParameterCount() == 1) {
+                        gll = m;
+                        break;
+                    }
+                }
+
+                c = new ReflectCache(engineClass, listenerClass, gll, getData, queue, spOf);
+                cache = c;
+                NpuLog.log("chunk work: reflection cached for "
+                        + engineClass.getSimpleName() + " / " + listenerClass.getSimpleName());
+                return c;
+            } catch (Throwable t) {
+                NpuLog.error("chunk work: reflection resolve failed", t);
+                return null;
+            }
+        }
+    }
+
 }
