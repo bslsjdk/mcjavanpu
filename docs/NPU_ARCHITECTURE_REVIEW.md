@@ -1038,3 +1038,150 @@ lightapply APPLIED sections=9 rows=72 written=0
 ---
 
 *—— 元宝（Yuanbao），2026-10-03*
+
+---
+
+# 17. 第九轮 · 帧率：先确认模组自己不是负担（元宝）
+
+日期：2026-10-03。依据：`mcjavanpu-npu.log`（10-02 15:45 → 10-03 19:44）+ `latest.log`（10-03 23:51）。
+
+## 17.0 两份日志不是同一次会话
+
+| 文件 | 最后时间 |
+|---|---|
+| `mcjavanpu-npu.log` | 10-03 **19:44** |
+| `latest.log` | 10-03 **23:51** |
+
+所以 23:51 那次运行的 NPU 明细日志未上传。但 `latest.log` 的启动行已足够判断配置：
+
+```
+boot: enabled=true autoWarmup=true debugLog=true autoProbe=true skyLight=true
+      guardEnabled=true lightBatch=128 lightFoldRadius=2
+      lightMode=npu chunkMode=npu
+```
+
+`autoProbe` / `skyLight` / `guardEnabled` 都在 → 我的代码进了构建。其中 **`skyLight=true`**（默认是 false），说明它被主动打开了。
+
+已确认的环境：`sodium 0.9.3-alpha`、`lithium`、`ferritecore`、`moreculling`、`entityculling`、`krypton`、**`spark 1.10.187`**，Vulkan + Adreno 735，共 70 个模组。
+
+---
+
+## 17.1 🔴 本轮最重要的发现：gate 只挡写入，没挡计算
+
+上一轮我加 `NpuTerrainGate` 时只 gate 了**结果**，没有 gate **投入**。后果是：
+
+```
+DensitySamplerMixin（tail）
+      ↓
+NpuTerrainAssist.requestWorkSet()      ← 一次规划 81 个 chunk
+      ↓
+后台 worker
+      ↓
+NpuTerrainVanilla.fill()               ← 完整 density tree，纯 Java
+      ↓
+TAKEOVER_CACHE
+      ↓
+下次命中 → NpuTerrainGate.allowWrite() → 拒绝（默认关闭）
+      ↓
+结果丢弃
+```
+
+**整条链跑完，然后被丢掉。**
+
+而 gate 默认关闭，所以默认配置下这就是纯粹的成本。日志里 `cpu_us=500687`（19:00 warmup）说明 density tree 评估有多贵 —— 那还只是 128 个 block 的一次调用，`requestWorkSet` 一次规划 **81 个 chunk**。
+
+这不是"优化没收益"，是**纯亏损**。
+
+### 已修
+
+新增 `NpuTerrainGate.worthComputing()`，含义是"结果有可能被用吗"，与 `allowWrite()`（"这个结果能用吗"）分工：
+
+| 方法 | 时机 | 作用 |
+|---|---|---|
+| `worthComputing()` | **开始前** | 决定要不要投入 CPU |
+| `allowWrite()` | 产出后 | 决定能不能写回 |
+
+接入点：
+
+- `NpuTerrainAssist.request()` / `requestWorkSet()`（`b188c78a6d`）
+- `DensitySamplerMixin` 尾部（`23e4e64b0c`）
+- `NpuPreload`（`a3d946264f`）
+
+并加 `skipped_gate` 计数器，日志能看到**拒绝了多少次**，而不是只看到算完了又被丢。
+
+**默认配置下（gate 关闭），地形路径现在完全不动。**
+
+---
+
+## 17.2 第二处：光照路径已被证明无效，但仍在排队
+
+第 16 节的结论成立且是终局性的：
+
+```
+lightapply written=0   bad=0/65536
+```
+
+- `bad=0`：NPU 结果**与 CPU 参考逐点一致，完全正确**
+- `written=0`：**没有任何一格比原版更亮**
+
+两者合起来只有一种解释：线性平滑算子作用在**已收敛的 BFS 光照场**上，永远产生不出更高值。这是算法的必然结果，不是 bug。
+
+但 `NpuChunkAuto` 仍在持续把 chunk 送进这条路径。guard 会在 6 次空写入后降级，**排队却没停** —— 于是 chunk 被提交、被 guard 跳过，白排队。
+
+已修（`d73b6a34b5`）：反应式和预测式两个入口都先查 `NpuGuard.allow()`。
+
+---
+
+## 17.3 新增：`NpuSelfCost`（`994396f805` + `e024b86b68`）
+
+现在的核心问题是"帧率不行是**我们**造成的吗"，这需要一个数，而不是讨论。
+
+```
+self_cost us: tick avg=? max=? n=?
+            | chunk avg=? n=?
+            | sampler avg=? max=? n=?
+```
+
+分别记录：模组自己的 server tick 开销、chunk-load 钩子开销、density sampler 钩子开销。tick 平均超过 1000us 会以 WARN 输出"模组是成本而非加速器"。
+
+**这个数字的两个用途：**
+
+- 接近 0 → 帧率问题**不在我们**，是别的模组 / 渲染 / 设备。这个负面结论很有价值，因为再怎么优化 NPU 也不会改善。
+- 不接近 0 → 模组本身在拖后腿，先修自己。
+
+---
+
+## 17.4 关于"用 NPU 辅助 GPU"：仍然不行，且现在证据更强
+
+`latest.log` 显示环境里已经装了 `sodium`（渲染优化）和 `lithium`（逻辑优化）。**CPU 侧能省的已经被专业模组省过了。**
+
+而 NPU 侧实测单次要 **10–38 ms**，一帧只有 16.6 ms。把每帧工作搬过去是几十微秒 → 几十毫秒。这个结论不因"装了 sodium"而改变。
+
+**NPU 唯一现实的定位是预加载**（第 15 节），而它现在被 gate 挡着（正确，因为地形正确性未证明）。
+
+---
+
+## 17.5 建议顺序（针对帧率）
+
+1. **先看 `self_cost` 那一行。** 这是分水岭：
+   - 接近 0 → 我们已经无责，帧率问题去找 sodium/光影/视距/设备温度
+   - 明显非 0 → 把结果给我，我继续砍
+2. **确认 `skipped_gate` 在涨** —— 涨说明地形路径确实停了
+3. **`spark` 已经装了**，跑一次 `/spark profiler` 能直接定位真正的热点，比我们猜强得多。建议把结果一并发出来。
+4. 在此之前不要再开新功能
+
+## 17.6 本轮提交
+
+| Commit | 内容 |
+|---|---|
+| `70052d15dc` | `NpuTerrainGate.worthComputing()` |
+| `b188c78a6d` | Assist 两入口开工前检查 + `skipped_gate` 计数 |
+| `23e4e64b0c` | mixin 不值得就不请求 |
+| `a3d946264f` | 预加载 gate 关闭时跳过 |
+| `d73b6a34b5` | chunk 入口查 guard，停止无效光照排队 |
+| `994396f805` | `NpuSelfCost` |
+| `e024b86b68` | tick 计时接线 |
+
+---
+
+*—— 元宝（Yuanbao），2026-10-03*
