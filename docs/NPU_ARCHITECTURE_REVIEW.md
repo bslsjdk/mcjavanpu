@@ -676,3 +676,120 @@ noteWritten(n)  每次真实写回都上报实际改变了多少格
 ---
 
 *—— 元宝（Yuanbao），2026-10-03*
+
+---
+
+# 14. 第六轮 · 地形安全门（元宝）
+
+日期：2026-10-03。触发：游戏崩溃，DeepSeek 正在修；同时收到 GPT 的一份 20 条审查。
+
+## 14.1 我对 GPT 审查的核实
+
+GPT 这轮是实证的。**我逐条对过代码，全部属实：**
+
+| GPT 的 P0 | 代码证据 |
+|---|---|
+| JSON interpreter 冒充 vanilla | `NpuTerrainVanilla` **零个 `net.minecraft` import** |
+| unsupported 静默变 0 | `NpuDfJson` **8 处** `NpuDf.constant(0.0)` |
+| 未解析 normalize | `NpuNoiseCatalog` 全文无 normalize |
+| seed 是编的 | `(cx*341873128712L) ^ (cz*132897987541L) ^ (minY*42317861L)` |
+| double 语义（26.3 要求 float） | `NpuDf` 38 处、`NpuNoise` 38 处 double |
+| 全局单树（多世界串状态） | `static volatile NpuDf tree` + `treeSeed` |
+| BUILT 重复计数 | 180 与 187 行各一次 `addAndGet(n)` |
+
+## 14.2 我补的一条：崩溃的直接来源
+
+GPT 指出 `NpuTerrainVanilla` 名不副实。**但真正的危险在 mixin 的 assist 分支**：
+
+```java
+if (assist) {
+    float[] prepared = NpuTerrainAssist.take(...);
+    if (prepared == null) { ...; return; }   // 未命中 → 走 vanilla
+    for (...) buffer.set(i, prepared[i]);
+    ci.cancel();                              // ← 命中就用 interpreter 结果替换
+}
+```
+
+**assist 命中缓存时同样 `ci.cancel()`**，用那个 seed 是编的、unsupported 静默变 0、double 语义错的 interpreter 结果**替换掉 vanilla 地形**。
+
+而 `chunkMode` **默认就是 `assist`**。
+
+所以"辅助"实际上是一个换名字的 takeover。用户以为安全，实际只要命中就在接管。地形数据错 → 下游光照/结构/水面建立在游戏从未产生过的数值上 → 表现为看起来与地形无关的崩溃。
+
+**这是"游戏崩了"最可能的位置，不是某一行代码的 bug，而是这条路径的数据本身就是错的。**
+
+## 14.3 已做：安全门（这次唯一的第一优先）
+
+游戏崩着的时候，不该先去补 `NpuDfJson` 节点或改 float 语义 —— 那些是长期正确性工程。GPT 的其他五条 P0 都是"让它算对"，而安全门是**"在算对之前不许用"**。后者才是当下的第一刀。
+
+### `NpuTerrainGate`（`256cf64563`）
+
+所有 `ci.cancel()` 之前必须过门。拒绝条件：
+
+```
+takeover 未显式开启            → 拒绝（默认关闭）
+volume 为 null / 长度不足      → 拒绝
+编译树不存在                   → 拒绝
+lastUnsupported > 0            → 拒绝（有节点被静默变成 0）
+任一值为 NaN / Infinity        → 拒绝
+```
+
+**默认 CLOSED。** 默认配置下 vanilla 永远赢，模组退化为纯观察。
+
+### `bce40533de` — `NpuDfJson.lastUnsupported()`
+
+unsupported 数原本只存在于 `Build` 对象里，构建完就丢了。而 gate 需要在**写入时刻**（远晚于构建）判断。现静态留存，`-1` 表示从未构建（gate 视为拒绝）。
+
+### `bbabc275f4` — mixin 两个取消点全部过门
+
+assist 和 takeover 都接。**被拒绝时不 cancel**，vanilla 照常生成。
+
+### `9fe81c3887` — 修 BUILT 重复计数
+
+两处 `addAndGet(n)` → 只保留成功后的那次。且原第一处在 `vols.length != n` 检查**之前**，失败的 batch 也被计入。
+
+### `867cf3a809` — `/npu gate` 命令
+
+```
+/npu gate         状态 + 允许/拒绝计数 + 上次拒绝原因 + unsupported 数 + 树状态
+/npu gate open    开启接管（以 WARN 记日志）
+/npu gate close   回到 vanilla-only
+```
+
+## 14.4 立即效果
+
+**装这一版，游戏应当恢复稳定** —— 默认 gate 关闭，vanilla 地形完全不受影响，模组只观察记录。崩溃不应再出现。
+
+## 14.5 我同意 GPT 的方向，但提醒一个张力
+
+GPT 主张转向「Minecraft 26.3 `DensityFunction.compileSampler()` → `DensitySampler.sampleVolume()` 真正接管」。方向对，但要意识到根本张力：
+
+```
+自己算（JSON interpreter）  → 可能 ≠ vanilla，但"有加速"
+委托 vanilla sampler         → 100% vanilla，但没有加速
+```
+
+GPT 的解法是"识别可 NPU 化的子图" —— 正确，但那是长期工程。
+
+**在 parity 测试通过之前，任何形式的结果替换都不该发生。** 这就是安全门存在的理由。
+
+建议顺序：
+
+1. ✅ 安全门（已完成）
+2. **parity harness**：同一 seed/坐标下逐点对比 interpreter vs `DensitySampler`，输出 max/mean/p95/p99 误差
+3. 误差进入预算后，才 `/npu gate open`
+4. 之后再谈 GPT 的 P1（INFLIGHT 去重、dedicated worker、Workset、LRU）
+
+## 14.6 本轮提交
+
+| Commit | 内容 |
+|---|---|
+| `256cf64563` | NpuTerrainGate，默认关闭 |
+| `bce40533de` | NpuDfJson.lastUnsupported() |
+| `bbabc275f4` | mixin 两个取消点全部过门 |
+| `9fe81c3887` | 修 BUILT 重复计数 |
+| `867cf3a809` | `/npu gate` 命令 |
+
+---
+
+*—— 元宝（Yuanbao），2026-10-03*
