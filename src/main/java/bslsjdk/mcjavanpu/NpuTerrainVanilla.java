@@ -32,9 +32,25 @@ public final class NpuTerrainVanilla {
     private static final java.util.concurrent.atomic.AtomicLong EVAL_US =
             new java.util.concurrent.atomic.AtomicLong();
 
+    /**
+     * The same tree, lowered into a flat instruction stream (see NpuDfProgram).
+     *
+     * Null means lowering failed and the tree walk is used instead - slower, same answer.
+     */
+    private static volatile NpuDfProgram program;
+
+    /** One register file per thread so sampling never allocates inside the loop. */
+    private static final ThreadLocal<double[]> REGS =
+            ThreadLocal.withInitial(() -> new double[64]);
+
     private NpuTerrainVanilla() {}
 
     public static String failReason() { return failReason; }
+
+    /** True when sampling runs the compiled program rather than walking the tree. */
+    public static boolean lowered() { return program != null; }
+
+    public static int programInstructions() { return program == null ? -1 : program.instructions(); }
 
     public static boolean ready() { return tree != null; }
 
@@ -43,7 +59,9 @@ public final class NpuTerrainVanilla {
         return "vanilla_tree=" + (tree != null ? "ready" : "no(" + failReason + ")")
                 + " samples=" + n
                 + " eval_ms=" + (EVAL_US.get() / 1000)
-                + " per_sample_us=" + (n == 0 ? 0 : EVAL_US.get() / n);
+                + " per_sample_us=" + (n == 0 ? 0 : EVAL_US.get() / n)
+                + " prog_insn=" + (program == null ? -1 : program.instructions())
+                + " prog_regs=" + (program == null ? -1 : program.registers());
     }
 
     /**
@@ -63,7 +81,16 @@ public final class NpuTerrainVanilla {
             tree = b.root;
             treeSeed = seed;
             failReason = "";
-            NpuLog.log("vanilla density tree ready | " + b.root);
+            try {
+                program = NpuDfProgram.build(b.root);
+                NpuLog.log("vanilla density tree ready | instructions=" + program.instructions()
+                        + " registers=" + program.registers()
+                        + " folded_constants=" + program.constants()
+                        + " | " + b.root);
+            } catch (Throwable lower) {
+                program = null;
+                NpuLog.error("density lowering failed, falling back to tree walk", lower);
+            }
             return tree;
         } catch (Throwable t) {
             failReason = String.valueOf(t);
@@ -94,6 +121,13 @@ public final class NpuTerrainVanilla {
         int ly = (sy - 1) / stepY + 2;
         int lz = (sz - 1) / stepZ + 2;
 
+        NpuDfProgram p = program;
+        double[] regs = REGS.get();
+        if (p != null && regs.length < p.registers()) {
+            regs = new double[p.registers()];
+            REGS.set(regs);
+        }
+
         long t0 = System.nanoTime();
         float[] lat = new float[lx * ly * lz];
         t.reset();
@@ -104,7 +138,7 @@ public final class NpuTerrainVanilla {
                 double wz = oz + (double) iz * stepZ;
                 for (int ix = 0; ix < lx; ix++) {
                     double wx = ox + (double) ix * stepX;
-                    lat[li++] = (float) t.get(wx, wy, wz);
+                    lat[li++] = (float) (p != null ? p.eval(wx, wy, wz, regs) : t.get(wx, wy, wz));
                 }
             }
         }
