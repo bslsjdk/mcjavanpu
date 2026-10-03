@@ -85,6 +85,13 @@ public final class NpuChunkWork {
      * a skip just means this chunk was not accelerated.
      */
     public static boolean runForChunk(int cx, int cz) {
+        // Honour the light mode first. This is the chunk-load path, so it runs
+        // during world loading - the worst possible moment to spend 10-38ms per
+        // section on work the user has switched off.
+        NpuConfig cfg0 = NpuConfig.get();
+        if (cfg0 == null || !cfg0.enabled) return false;
+        if ("vanilla".equalsIgnoreCase(cfg0.lightMode)) return false;
+
         // Do not even read the light data if the result is known to be inert.
         //
         // The path was measured fully correct and completely ineffective: bad=0 across the board,
