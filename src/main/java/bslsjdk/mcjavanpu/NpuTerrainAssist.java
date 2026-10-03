@@ -44,7 +44,7 @@ public final class NpuTerrainAssist {
      * Gap between submissions. This is the CPU-sharing knob: larger means the prefetcher takes
      * less of the machine while a world is loading, at the cost of a lower hit rate.
      */
-    private static final long MIN_INTERVAL_MS = 30;
+    private static final long MIN_INTERVAL_MS = 10;
 
     /** Overworld chunk shape this path serves. */
     private static final int DEF_SX = 16, DEF_SY = 384, DEF_SZ = 16;
@@ -121,7 +121,11 @@ public final class NpuTerrainAssist {
 
                 // Gather a whole submission's worth. Fewer, larger calls is the only lever that
                 // raises throughput, because the native side serialises on a global lock.
-                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(DEF_SX, DEF_SY, DEF_SZ));
+                // Two submissions' worth per drain. One submission covers four chunks, and four
+                // chunks per 10 ms still leaves the prefetcher behind a fast-moving player; eight
+                // per drain lifts the ceiling to roughly 800 chunks/s of walk-ahead while keeping
+                // the CPU yield pattern the game needs.
+                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(DEF_SX, DEF_SY, DEF_SZ) * 2);
                 List<Long> keys = new ArrayList<>(room);
                 keys.add(firstKey);
                 while (keys.size() < room) {
