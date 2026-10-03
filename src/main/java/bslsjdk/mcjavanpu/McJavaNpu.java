@@ -161,6 +161,75 @@ public final class McJavaNpu implements ModInitializer {
         return r.ok && r.bad == 0 ? 1 : 0;
     }
 
+    /**
+     * REAL data path: read an actual 8x8x8 block-light field around the player and
+     * run it through the NPU propagation operator.
+     *
+     * Everything Minecraft-side is done through reflection on purpose: this file
+     * then compiles against ANY 26.3 revision, and a signature change shows up as
+     * a readable READ_FAILED message instead of a build break.
+     */
+    private static int runLightChunk(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int blocks) {
+        String api = "(none)";
+        byte[] cells = null;
+        String err = null;
+        try {
+            CommandSourceStack src = context.getSource();
+            Object level = src.getLevel();
+            Object pos = src.getClass().getMethod("getPosition").invoke(src);
+            Class<?> pc = pos.getClass();
+            java.lang.reflect.Field fx = pc.getField("x"), fy = pc.getField("y"), fz = pc.getField("z");
+            int bx = (int) Math.floor(((Number) fx.get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) fy.get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) fz.get(pos)).doubleValue());
+
+            Class<?> llCls = Class.forName("net.minecraft.world.level.LightLayer");
+            Object blockLayer = null;
+            Object[] consts = llCls.getEnumConstants();
+            if (consts != null) {
+                for (Object o : consts) if ("BLOCK".equals(String.valueOf(o))) { blockLayer = o; break; }
+            }
+            if (blockLayer == null) throw new IllegalStateException("LightLayer.BLOCK missing");
+
+            Class<?> bpCls = Class.forName("net.minecraft.core.BlockPos");
+            java.lang.reflect.Constructor<?> ctor = bpCls.getConstructor(int.class, int.class, int.class);
+            java.lang.reflect.Method getBrightness = level.getClass().getMethod("getBrightness", llCls, bpCls);
+            api = "getBrightness(LightLayer.BLOCK,BlockPos)";
+
+            cells = new byte[NpuLightAccel.CELLS];
+            int i = 0;
+            for (int y = 0; y < 8; y++)
+                for (int z = 0; z < 8; z++)
+                    for (int x = 0; x < 8; x++) {
+                        Object bp = ctor.newInstance(bx + x, by + y, bz + z);
+                        cells[i++] = (byte) (((Number) getBrightness.invoke(level, blockLayer, bp)).intValue() & 0xFF);
+                    }
+        } catch (Throwable t) {
+            err = t.getClass().getSimpleName() + ": " + t.getMessage();
+        }
+
+        if (err != null) {
+            final String line = "[NPU] lightchunk READ_FAILED api=" + api + " -> " + err;
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            System.out.println("[MCJavaNPU] " + line);
+            return 0;
+        }
+
+        int mn = 255, mx = 0, sum = 0;
+        for (byte b : cells) { int v = b & 0xFF; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+        final String stat = "real_light min=" + mn + " max=" + mx + " avg="
+                + String.format(java.util.Locale.ROOT, "%.2f", sum / (double) NpuLightAccel.CELLS);
+
+        long t0 = System.nanoTime();
+        NpuLightAccel.Result r = NpuLightAccel.propagateReal(cells, blocks);
+        long wallUs = (System.nanoTime() - t0) / 1000;
+
+        final String line = "[NPU] lightchunk " + stat + " | " + r.summary() + " wall_us=" + wallUs;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        System.out.println("[MCJavaNPU] " + line);
+        return r.ok ? 1 : 0;
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -233,6 +302,12 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLight(context, 64))
                         .then(Commands.argument("blocks", IntegerArgumentType.integer(1, 4096))
                                 .executes(context -> runLight(context, IntegerArgumentType.getInteger(context, "blocks")))))
+                .then(Commands.literal("lightchunk")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        // REAL Minecraft block-light data through the NPU propagation operator.
+                        .executes(context -> runLightChunk(context, 128))
+                        .then(Commands.argument("blocks", IntegerArgumentType.integer(1, 512))
+                                .executes(context -> runLightChunk(context, IntegerArgumentType.getInteger(context, "blocks")))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
