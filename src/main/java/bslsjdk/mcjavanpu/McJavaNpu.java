@@ -761,6 +761,21 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("tengen")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] tengen: " + NpuTerrainGen.describe() + " | "
+                                    + NpuTerrainGen.generate(16, 64, 16, 0, -64, 0, 12345L).summary();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            return 1;
+                        })
+                        .then(Commands.literal("full")
+                                .executes(context -> {
+                                    final String l = "[NPU] tengen full: "
+                                            + NpuTerrainGen.generate(16, 384, 16, 0, -64, 0, 12345L).summary();
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("pipeline")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
