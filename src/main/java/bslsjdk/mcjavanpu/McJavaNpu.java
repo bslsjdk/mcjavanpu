@@ -423,7 +423,35 @@ public final class McJavaNpu implements ModInitializer {
                 if (!r.ok) {
                     info = "FAIL " + r.error;
                 } else if (!writeBack) {
-                    info = "mode=" + mode + " (assist, not written) sections=" + sections + " rows=" + rows + " nonzero=" + nz + " | " + r.summary();
+                    // ASSIST: the NPU does the numeric part of the propagation and hands it
+                    // to the CPU as a head start. It only ever raises a cell, never lowers
+                    // one, so it can add light but can never darken the world or fight the
+                    // engine's own propagation. The CPU then finishes the job from a much
+                    // better starting point instead of from zero.
+                    int raised = 0, row = 0;
+                    for (Object dl : layers) {
+                        java.lang.reflect.Method gv = dl.getClass().getMethod("get", int.class, int.class, int.class);
+                        java.lang.reflect.Method st = dl.getClass().getMethod("set", int.class, int.class, int.class, int.class);
+                        for (int sy = 0; sy < 2; sy++)
+                            for (int sz = 0; sz < 2; sz++)
+                                for (int sx = 0; sx < 2; sx++) {
+                                    for (int y = 0; y < 8; y++)
+                                        for (int z = 0; z < 8; z++)
+                                            for (int x = 0; x < 8; x++) {
+                                                int v = r.light(row, (y * 8 + z) * 8 + x);
+                                                if (v <= 0) continue;
+                                                int cur = ((Number) gv.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z)).intValue();
+                                                if (v > cur) {
+                                                    st.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z, v);
+                                                    raised++;
+                                                }
+                                            }
+                                    row++;
+                                }
+                    }
+                    info = "mode=" + mode + " ASSIST sections=" + sections + " rows=" + rows
+                            + " raised=" + raised + "/" + (rows * NpuLightAccel.CELLS)
+                            + " (cpu continues from this)" + " | " + r.summary();
                 } else {
                     int written = 0, row = 0;
                     for (Object dl : layers) {
