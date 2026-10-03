@@ -210,7 +210,7 @@ public final class NpuTerrainAssist {
 
                 for (int i = 0; i < n; i++) {
                     CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
-            IN_FLIGHT.remove(keys.get(i));
+                    IN_FLIGHT.remove(keys.get(i));
                 }
                 if (CACHE.size() > CACHE_CAP * 2) CACHE.clear();
                 BUILT.addAndGet(n);
@@ -221,6 +221,10 @@ public final class NpuTerrainAssist {
             } catch (Throwable t) {
                 FAILED.incrementAndGet();
                 lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
+                // A failed prefetch must not poison IN_FLIGHT forever. Otherwise one
+                // transient NPU/CPU failure permanently suppresses that chunk's future
+                // requests until process restart.
+                if (firstKey != null) IN_FLIGHT.remove(firstKey);
             }
         }
     }
@@ -401,5 +405,6 @@ public final class NpuTerrainAssist {
     public static void clear() {
         CACHE.clear();
         REQUESTED.clear();
+        IN_FLIGHT.clear();
     }
 }
