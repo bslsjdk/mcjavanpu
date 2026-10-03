@@ -96,7 +96,10 @@ public final class NpuChunkAuto {
                     + (NpuGuard.isDegraded() ? "DEGRADED(" + NpuGuard.reason() + ")" : "ok")
                     + " | service=" + (NpuServiceClient.healthy() ? "UP" : "DOWN")
                     + " | " + NpuTelemetry.summary()
-                    + " | " + NpuGuard.summary());
+                    + " | " + NpuGuard.summary()
+                    + " | " + NpuServiceClient.ioSummary()
+                    + " | " + NpuServiceClient.lockSummary()
+                    + " | " + NpuTerrainVanilla.summary());
         }
     }
 
