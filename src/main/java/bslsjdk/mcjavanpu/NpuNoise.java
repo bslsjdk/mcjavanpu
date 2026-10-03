@@ -42,7 +42,7 @@ public final class NpuNoise {
             return result;
         }
 
-        /** Maps to [0, n) the way RandomSource.nextInt does: high bits, not low. */
+        /** RandomSource.nextInt(n): discard the sign bit, then modulo. */
         public int nextInt(int n) {
             if (n <= 0) throw new IllegalArgumentException();
             long r = nextLong() >>> 1;
@@ -73,18 +73,21 @@ public final class NpuNoise {
         private final double xo, yo, zo;
 
         public PerlinNoise(Rng rng) {
-            // vanilla draws 256 ints and the three offsets, in this order
-            int[] perm = new int[256];
-            for (int i = 0; i < 256; i++) perm[i] = i;
-            for (int i = 0; i < 256; i++) {
-                int j = rng.nextInt(256 - i) + i;
-                int t = perm[i]; perm[i] = perm[j]; perm[j] = t;
-            }
-            for (int i = 0; i < 256; i++) p[i] = perm[i];
-            for (int i = 0; i < 256; i++) p[i + 256] = perm[i];
+            // GradientNoise ctor order, read off the bytecode: three offsets first, then the
+            // Fisher-Yates shuffle, and the offsets are scaled by 256.
             this.xo = rng.nextDouble() * 256.0;
             this.yo = rng.nextDouble() * 256.0;
             this.zo = rng.nextDouble() * 256.0;
+            byte[] perm = new byte[256];
+            for (int i = 0; i < 256; i++) perm[i] = (byte) i;
+            for (int i = 0; i < 256; i++) {
+                int j = rng.nextInt(256 - i);
+                byte t = perm[i];
+                perm[i] = perm[j + i];
+                perm[j + i] = t;
+            }
+            for (int i = 0; i < 256; i++) p[i] = perm[i] & 255;
+            for (int i = 0; i < 256; i++) p[i + 256] = perm[i] & 255;
         }
 
         private static double gradDot(int hash, double x, double y, double z) {
@@ -141,30 +144,39 @@ public final class NpuNoise {
         public final double[] amplitudes;
         private final PerlinNoise[] levels;
 
-        public NormalNoise(long seed, int firstOctave, double[] amplitudes) {
-            this.firstOctave = firstOctave;
-            this.amplitudes = amplitudes;
-            this.levels = new PerlinNoise[amplitudes.length];
-            // vanilla walks the octave range from the top down, sharing one Rng
+        public NormalNoise(long seed, int baseOctave, double baseAmplitude, double[] modifiers) {
+            this.firstOctave = baseOctave;
+            int n = modifiers.length;
+            // NormalNoise.buildOctaves: amplitudes are baseAmplitude * parityNorm * modifier.
+            double parity = Math.pow(2.0, n - 1) / (Math.pow(2.0, n) - 1.0);
+            this.amplitudes = new double[n];
+            this.levels = new PerlinNoise[n];
+            double total = 0.0;
             Rng rng = new Rng(seed);
-            int last = firstOctave + amplitudes.length - 1;
-            for (int o = last; o >= firstOctave; o--) {
-                levels[o - firstOctave] = new PerlinNoise(rng);
+            for (int o = 0; o < n; o++) {
+                double mod = modifiers[o];
+                if (mod == 0.0) { amplitudes[o] = 0.0; levels[o] = null; continue; }
+                amplitudes[o] = baseAmplitude * parity * mod;
+                // vanilla builds the octave table from the top octave downwards, one shared Rng
+                levels[o] = new PerlinNoise(rng);
+                total += amplitudes[o];
             }
+            this.normalization = total == 0.0 ? 1.0 : total;
         }
+
+        private final double normalization;
 
         /** Number of octaves = the k-width of the dot product for one point. */
         public int octaves() { return amplitudes.length; }
 
         public double getValue(double x, double y, double z) {
             double v = 0.0;
-            double f = Math.pow(2.0, firstOctave);
             for (int o = 0; o < amplitudes.length; o++) {
-                int level = firstOctave + o;
-                double freq = Math.pow(2.0, level);
+                if (levels[o] == null || amplitudes[o] == 0.0) continue;
+                double freq = Math.pow(2.0, firstOctave + o);
                 v += levels[o].getValue(x * freq, y * freq, z * freq) * amplitudes[o];
             }
-            return v;
+            return v / normalization;
         }
     }
 
@@ -172,15 +184,15 @@ public final class NpuNoise {
 
     /** Parameters copied verbatim from data/minecraft/worldgen/noise/*.json. */
     public static NormalNoise continentalness(long seed) {
-        return new NormalNoise(seed, -9, new double[]{1,1,2,2,2,1,1,1,1});
+        return new NormalNoise(seed, -9, 0.8880832896205223, new double[]{1,1,2,2,2,1,1,1,1});
     }
 
     public static NormalNoise erosion(long seed) {
-        return new NormalNoise(seed, -9, new double[]{1,1,0,1,1});
+        return new NormalNoise(seed, -9, 1.063180125160734, new double[]{1,1,0,1,1});
     }
 
     public static NormalNoise temperature(long seed) {
-        return new NormalNoise(seed, -10, new double[]{1.5,0,1,0,0,0});
+        return new NormalNoise(seed, -10, 1.2453007926713473, new double[]{1.5,0,1,0,0,0});
     }
 
     public static String describe() {
