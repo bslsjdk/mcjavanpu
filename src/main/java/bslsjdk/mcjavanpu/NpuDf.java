@@ -137,7 +137,7 @@ public abstract class NpuDf {
                                      NpuNoise.NormalNoise jagged, NpuDf base3d) {
         NpuDf jaggedTerm = mul(jaggedness, halfNegative(noise(jagged, 1500.0, 0.0)));
         NpuDf inner = add(depth, cache(jaggedTerm));
-        return cache(add(mul(quarterNegative(mul(inner, factor)), 4.0), base3d));
+        return cache(add(mul(quarterNegative(mul(inner, factor)), constant(4.0)), base3d));
     }
 
     /** Recursively counts leaves, to show how much work one sample represents. */
