@@ -71,6 +71,11 @@ public final class NpuConfig {
             debugLog = Boolean.parseBoolean(pr.getProperty("debugLog", "false"));
             lightBatch = Integer.parseInt(pr.getProperty("lightBatch", "128"));
             lightFoldRadius = Integer.parseInt(pr.getProperty("lightFoldRadius", "1"));
+            // A radius of 3+ folds 49+ sections into one submit and can overrun the single
+            // threaded service (observed as SocketTimeoutException on every later request).
+            // 2 (5x5 = 25 sections) is the largest batch that stays comfortably inside the
+            // IPC payload cap, so clamp here rather than trusting a hand-edited file.
+            lightFoldRadius = Math.max(0, Math.min(2, lightFoldRadius));
             lightMode = pr.getProperty("lightMode", "assist");
             chunkMode = pr.getProperty("chunkMode", "assist");
             NpuLog.log("config loaded from " + p);
