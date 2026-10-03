@@ -128,14 +128,28 @@ public final class NpuTerrainAssist {
         NpuLog.log("terrain assist worker started");
     }
 
+    /** Releases every key a batch claimed, so a bail-out cannot poison them. */
+    private static void releaseInFlight(List<Long> keys, Long firstKey) {
+        if (keys != null) {
+            for (int i = 0; i < keys.size(); i++) IN_FLIGHT.remove(keys.get(i));
+            return;
+        }
+        if (firstKey != null) IN_FLIGHT.remove(firstKey);
+    }
+
     private static void loop() {
         while (true) {
+            // Declared outside the try so the catch below can release them.
+            // A prefetch that dies or bails must not leave its keys in IN_FLIGHT,
+            // or that chunk can never be requested again for the rest of the session.
+            Long firstKey = null;
+            List<Long> keys = null;
             try {
-                Long firstKey = REQUESTED.take();
+                firstKey = REQUESTED.take();
                 if (firstKey == null) continue;
 
                 NpuConfig cfg = NpuConfig.get();
-                if (cfg == null || !cfg.enabled) continue;
+                if (cfg == null || !cfg.enabled) { releaseInFlight(keys, firstKey); continue; }
                 // The feature switch is for measurement, not for permission.
                 //
                 // This line was the second, silent reason the prefetcher never produced anything:
@@ -164,7 +178,7 @@ public final class NpuTerrainAssist {
                 // per drain lifts the ceiling to roughly 800 chunks/s of walk-ahead while keeping
                 // the CPU yield pattern the game needs.
                 int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(DEF_SX, DEF_SY, DEF_SZ) * 2);
-                List<Long> keys = new ArrayList<>(room);
+                keys = new ArrayList<>(room);
                 keys.add(firstKey);
                 while (keys.size() < room) {
                     Long next = REQUESTED.peek();
@@ -204,9 +218,14 @@ public final class NpuTerrainAssist {
                     FAILED.incrementAndGet();
                     NpuLog.log("prefetch: vanilla tree unavailable (" + NpuTerrainVanilla.failReason()
                             + "), falling back to per-chunk vanilla generation");
+                    releaseInFlight(keys, firstKey);
                     continue;
                 }
-                if (vols.length != n) { FAILED.incrementAndGet(); lastError = "short batch"; continue; }
+                if (vols.length != n) {
+                    FAILED.incrementAndGet(); lastError = "short batch";
+                    releaseInFlight(keys, firstKey);
+                    continue;
+                }
 
                 for (int i = 0; i < n; i++) {
                     CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
@@ -221,10 +240,10 @@ public final class NpuTerrainAssist {
             } catch (Throwable t) {
                 FAILED.incrementAndGet();
                 lastError = t.getClass().getSimpleName() + ": " + t.getMessage();
-                // A failed prefetch must not poison IN_FLIGHT forever. Otherwise one
-                // transient NPU/CPU failure permanently suppresses that chunk's future
-                // requests until process restart.
-                if (firstKey != null) IN_FLIGHT.remove(firstKey);
+                // Release the whole batch, not just the first key. Releasing only the
+                // first would still poison every other chunk in this submission for the
+                // rest of the session, which is the same bug in a smaller form.
+                releaseInFlight(keys, firstKey);
             }
         }
     }
