@@ -70,6 +70,20 @@ public final class NpuTerrainAssist {
     private static volatile boolean workerStarted;
     private static volatile String lastError = "";
 
+    /**
+     * Takeover-mode cache: volumes generated as a by-product of a four-chunk batch.
+     *
+     * Eight entries is ~3 MB. Enough to cover the walk-ahead that actually happens while the
+     * player moves (the next three chunks of the batch), without holding a whole region.
+     */
+    private static final int TAKEOVER_CAP = 8;
+    private static final Map<Long, float[]> TAKEOVER_CACHE = new ConcurrentHashMap<>();
+    private static final AtomicLong TAKEOVER_BATCHES = new AtomicLong();
+    private static final AtomicLong TAKEOVER_SERVED = new AtomicLong();
+
+    public static void countTakeoverBatch() { TAKEOVER_BATCHES.incrementAndGet(); }
+    public static void countTakeoverServed() { TAKEOVER_SERVED.incrementAndGet(); }
+
     private NpuTerrainAssist() {}
 
     /** Packs chunk and height into one long. Bit layout is fixed so both sides agree. */
@@ -154,6 +168,47 @@ public final class NpuTerrainAssist {
      *
      * Returns prepared density when ready, otherwise null and queues a prefetch.
      */
+    /**
+     * Lookup without touching the assist statistics.
+     *
+     * Takeover batching reuses this cache, and folding its traffic into the assist hit rate
+     * would make the assist numbers meaningless.
+     */
+    public static float[] peek(int cx, int cz, int minY) {
+        Prepared p = CACHE.get(key(cx, cz, minY));
+        if (p == null) return null;
+        if (p.vol.length != DEF_SX * DEF_SY * DEF_SZ) return null;
+        return p.vol;
+    }
+
+    /**
+     * Publish a volume somebody else computed.
+     *
+     * Takeover generates four chunks per submission (the element budget allows exactly four at
+     * 225 lattice points and K=16). The one that was asked for is consumed immediately; the other
+     * three would be thrown away, so they are parked here for the neighbours that are about to
+     * load. That is what turns one ~50 ms submission into four served chunks.
+     *
+     * Capacity is deliberately much smaller than the assist cache: a full 16x384x16 volume is
+     * ~393 KB as floats, so a large takeover cache would be hundreds of megabytes.
+     */
+    public static void put(int cx, int cz, int minY, float[] vol) {
+        if (vol == null || vol.length != DEF_SX * DEF_SY * DEF_SZ) return;
+        if (TAKEOVER_CACHE.size() >= TAKEOVER_CAP) TAKEOVER_CACHE.clear();
+        TAKEOVER_CACHE.put(key(cx, cz, minY), vol);
+    }
+
+    public static float[] peekTakeover(int cx, int cz, int minY) {
+        return TAKEOVER_CACHE.get(key(cx, cz, minY));
+    }
+
+    public static int takeoverCached() { return TAKEOVER_CACHE.size(); }
+
+    public static String takeoverSummary() {
+        return "takeover_cache=" + TAKEOVER_CACHE.size() + "/" + TAKEOVER_CAP
+                + " batches=" + TAKEOVER_BATCHES.get() + " served=" + TAKEOVER_SERVED.get();
+    }
+
     public static float[] take(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return null;
