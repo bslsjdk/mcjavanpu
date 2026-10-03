@@ -5,6 +5,8 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerChunkEvents;
+import net.fabricmc.fabric.api.event.lifecycle.v1.ServerTickEvents;
 import net.minecraft.commands.CommandSourceStack;
 import net.minecraft.commands.Commands;
 import net.minecraft.server.permissions.Permissions;
@@ -18,6 +20,16 @@ public final class McJavaNpu implements ModInitializer {
         NpuLog.log("mod initialised");
         Thread.ofVirtual().name("mcjavanpu-init").start(McJavaNpu::boot);
         CommandRegistrationCallback.EVENT.register((dispatcher, registryAccess, environment) -> registerCommands(dispatcher));
+
+        // Automatic entry point. Without this the NPU only ever ran when a command was
+        // typed, which is why loading looked exactly like vanilla - it was vanilla.
+        try {
+            ServerChunkEvents.CHUNK_LOAD.register((world, chunk) -> NpuChunkAuto.onChunkLoad(world, chunk));
+            ServerTickEvents.END_SERVER_TICK.register(server -> NpuChunkAuto.onServerTick(server));
+            NpuLog.log("auto hooks registered (chunk load + server tick)");
+        } catch (Throwable t) {
+            NpuLog.error("auto hooks failed to register", t);
+        }
         NpuLog.log("dedicated log: " + NpuLog.getPathString());
     }
 
