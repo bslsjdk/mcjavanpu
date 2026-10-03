@@ -173,6 +173,7 @@ public final class McJavaNpu implements ModInitializer {
         String api = "(none)";
         byte[] cells = null;
         String err = null;
+        int nzBlock = 0, nzSky = 0, skyMax = 0;
         try {
             CommandSourceStack src = context.getSource();
             Object level = src.getLevel();
@@ -200,12 +201,18 @@ public final class McJavaNpu implements ModInitializer {
             api = "getBrightness(LightLayer.BLOCK,BlockPos)";
 
             cells = new byte[NpuLightAccel.CELLS];
+            nzBlock = 0; nzSky = 0; skyMax = 0;
             int i = 0;
             for (int y = 0; y < 8; y++)
                 for (int z = 0; z < 8; z++)
                     for (int x = 0; x < 8; x++) {
                         Object bp = ctor.newInstance(bx + x, by + y, bz + z);
-                        cells[i++] = (byte) (((Number) getBrightness.invoke(level, blockLayer, bp)).intValue() & 0xFF);
+                        int bv = ((Number) getBrightness.invoke(level, blockLayer, bp)).intValue();
+                        int sv = skyLayer == null ? 0 : ((Number) getBrightness.invoke(level, skyLayer, bp)).intValue();
+                        if (bv > 0) nzBlock++;
+                        if (sv > 0) nzSky++;
+                        if (sv > skyMax) skyMax = sv;
+                        cells[i++] = (byte) (Math.max(bv, sv) & 0xFF);
                     }
         } catch (Throwable t) {
             err = t.getClass().getSimpleName() + ": " + t.getMessage();
@@ -218,10 +225,11 @@ public final class McJavaNpu implements ModInitializer {
             return 0;
         }
 
-        int mn = 255, mx = 0, sum = 0;
-        for (byte b : cells) { int v = b & 0xFF; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; }
+        int mn = 255, mx = 0, sum = 0, nz = 0;
+        for (byte b : cells) { int v = b & 0xFF; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; if (v > 0) nz++; }
         final String stat = "real_light min=" + mn + " max=" + mx + " avg="
-                + String.format(java.util.Locale.ROOT, "%.2f", sum / (double) NpuLightAccel.CELLS);
+                + String.format(java.util.Locale.ROOT, "%.2f", sum / (double) NpuLightAccel.CELLS)
+                + " nonzero=" + nz + "/512 (block " + nzBlock + ", sky " + nzSky + ", skyMax " + skyMax + ")";
 
         long t0 = System.nanoTime();
         NpuLightAccel.Result r = NpuLightAccel.propagateReal(cells, blocks);
