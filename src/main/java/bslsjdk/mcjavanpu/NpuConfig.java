@@ -12,7 +12,9 @@ import java.util.Properties;
  *  autoWarmup - build + calibrate the graphs in the background at world load,
  *               so the very first real use is not the slow path
  *  debugLog   - log every call instead of only summaries
- *  lightBatch - how many 8x8x8 blocks go into one propagation batch
+ *  lightBatch - how many 8x8x8 blocks go into one propagation batch (legacy)
+ *  lightFoldRadius - chunk-fold radius. 0 = off, 1 = 3x3 sections (9), 2 = 5x5 (25),
+ *                   3 = 7x7 (49). Bigger = fewer calls but a longer stall when it lands.
  */
 public final class NpuConfig {
 
@@ -20,6 +22,7 @@ public final class NpuConfig {
     public boolean autoWarmup = true;
     public boolean debugLog = false;
     public int lightBatch = 128;
+    public int lightFoldRadius = 1;
 
     private static NpuConfig INSTANCE;
 
@@ -42,6 +45,7 @@ public final class NpuConfig {
             autoWarmup = Boolean.parseBoolean(pr.getProperty("autoWarmup", "true"));
             debugLog = Boolean.parseBoolean(pr.getProperty("debugLog", "false"));
             lightBatch = Integer.parseInt(pr.getProperty("lightBatch", "128"));
+            lightFoldRadius = Integer.parseInt(pr.getProperty("lightFoldRadius", "1"));
             NpuLog.log("config loaded from " + p);
         } catch (Throwable t) {
             NpuLog.error("config load failed, using defaults", t);
@@ -55,6 +59,7 @@ public final class NpuConfig {
             pr.setProperty("autoWarmup", String.valueOf(autoWarmup));
             pr.setProperty("debugLog", String.valueOf(debugLog));
             pr.setProperty("lightBatch", String.valueOf(lightBatch));
+            pr.setProperty("lightFoldRadius", String.valueOf(lightFoldRadius));
             Path p = file();
             Files.createDirectories(p.getParent());
             try (var out = Files.newOutputStream(p)) {
@@ -71,6 +76,7 @@ public final class NpuConfig {
             case "enabled": enabled = !enabled; break;
             case "autoWarmup": autoWarmup = !autoWarmup; break;
             case "debugLog": debugLog = !debugLog; break;
+            case "lightFoldRadius": lightFoldRadius = (lightFoldRadius + 1) % 5; break;
             default: return;
         }
         save();
@@ -79,6 +85,7 @@ public final class NpuConfig {
 
     public String describe() {
         return "enabled=" + enabled + " autoWarmup=" + autoWarmup
-                + " debugLog=" + debugLog + " lightBatch=" + lightBatch;
+                + " debugLog=" + debugLog + " lightBatch=" + lightBatch
+                + " lightFoldRadius=" + lightFoldRadius;
     }
 }
