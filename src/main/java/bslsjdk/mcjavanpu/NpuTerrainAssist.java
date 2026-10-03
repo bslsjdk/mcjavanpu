@@ -32,7 +32,7 @@ public final class NpuTerrainAssist {
     /** Requests waiting on the background thread. Bounded: prefetch is an optimisation. */
     private static final int QUEUE_CAP = 256;
     /** How many chunks the worker prepares per second. Keeps the service free for light. */
-    private static final long MIN_INTERVAL_MS = 40;
+    private static final long MIN_INTERVAL_MS = 8;
 
     private record Key(int cx, int cz, int sx, int sy, int sz, int minY) {}
 
@@ -82,7 +82,7 @@ public final class NpuTerrainAssist {
                 if (!NpuServiceClient.isAvailable()) continue;
 
                 long seed = (k.cx * 341873128712L) ^ (k.cz * 132897987541L) ^ (k.minY * 42317861L);
-                NpuTerrainGen.Result r = NpuTerrainGen.generate(k.sx, k.sy, k.sz,
+                NpuTerrainLattice.Result r = NpuTerrainLattice.generate(k.sx, k.sy, k.sz,
                         k.cx << 4, k.minY, k.cz << 4, seed);
                 if (!r.usedNpu) { FAILED.incrementAndGet(); lastError = r.note; continue; }
                 synchronized (CACHE) {
