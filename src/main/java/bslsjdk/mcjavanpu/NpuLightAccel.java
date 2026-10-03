@@ -24,6 +24,11 @@ public final class NpuLightAccel {
 
     /** Weight of each of the 6 face neighbours; the centre keeps the rest. */
     private static final int CENTRE = 127;
+    /** Row sum of the operator: CENTRE + 6 * NEIGHBOUR. */
+    public static final float OP_SUM = 253f;
+    /** Host reference factor; undone when converting results back to light units. */
+    public static final float REF_Q = 1.0e-6f;
+
     private static final int NEIGHBOUR = 21;              // 6*21 = 126, total 253 -> scaled by 1/253
 
     private NpuLightAccel() {}
@@ -70,10 +75,21 @@ public final class NpuLightAccel {
             this.bad = bad; this.maxAbs = maxAbs; this.m = m; this.k = k; this.n = n;
             this.out = out; this.scale = scale;
         }
-        /** Row r, column j, converted back to light units and clamped to 0..15. */
+        /**
+         * Row r, column j, converted back to light units and clamped to 0..15.
+         *
+         * Two corrections on top of the raw value:
+         *   / OP_SUM - the operator row sums to 253, so the product is a weighted
+         *              sum rather than a normalised average
+         *   / REF_Q  - the host reference multiplies by Q = 1e-6 to keep int8 in
+         *              range, so that has to be undone too
+         * Without both, out * scale lands near 0.0038 and rounds to 0, which is
+         * exactly why the first write-back reported written=0.
+         */
         public int light(int r, int j) {
             if (out == null) return 0;
-            int v = Math.round(out[r * n + j] * scale);
+            float f = out[r * n + j] * scale / (REF_Q * OP_SUM);
+            int v = Math.round(f);
             return v < 0 ? 0 : (v > 15 ? 15 : v);
         }
         public double speedup() { return cpuUs <= 0 ? 0.0 : cpuUs / (double) Math.max(1, npuUs); }
