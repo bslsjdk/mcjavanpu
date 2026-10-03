@@ -81,6 +81,11 @@ public final class NpuServiceClient {
         return request("EXEC_MATMUL " + m + " " + k + " " + n);
     }
 
+    /** INT8 quantized matmul: the datatype HTP accelerates natively. */
+    public static String matMulInt8(int m, int k, int n) {
+        return request("EXEC_MATMUL8 " + m + " " + k + " " + n);
+    }
+
     public static String add(float[] a, float[] b) {
         if (a == null || b == null || a.length == 0 || a.length != b.length || a.length > 1024)
             return "ERR ADD_SIZE";
