@@ -196,6 +196,9 @@ public final class NpuServiceClient {
             new java.util.concurrent.atomic.AtomicLong();
     private static final java.util.concurrent.atomic.AtomicLong CALLS =
             new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong TOTAL_US = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong PREPARE_US = new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong ASSEMBLE_US = new java.util.concurrent.atomic.AtomicLong();
     private static volatile long LAST_SERVICE_US;
 
     /**
@@ -211,11 +214,15 @@ public final class NpuServiceClient {
     public static String ioSummary() {
         long n = Math.max(1, CALLS.get());
         return "ipc_calls=" + CALLS.get()
-                + " send_avg_us=" + (SEND_US.get() / n)
-                + " wait_avg_us=" + (WAIT_US.get() / n)
-                + " recv_avg_us=" + (RECV_US.get() / n)
-                + " svc_avg_us=" + (SERVICE_US.get() / n)
-                + " svc_last_us=" + LAST_SERVICE_US;
+                + " queue_wait_avg_us=" + (LOCK_WAIT_US.get() / n)
+                + " ipc_send_avg_us=" + (SEND_US.get() / n)
+                + " service_wait_avg_us=" + (WAIT_US.get() / n)
+                + " ipc_recv_avg_us=" + (RECV_US.get() / n)
+                + " npu_service_avg_us=" + (SERVICE_US.get() / n)
+                + " prepare_avg_us=" + (PREPARE_US.get() / n)
+                + " assemble_avg_us=" + (ASSEMBLE_US.get() / n)
+                + " total_avg_us=" + (TOTAL_US.get() / n)
+                + " npu_service_last_us=" + LAST_SERVICE_US;
     }
 
     public static String lockSummary() {
@@ -239,6 +246,9 @@ public final class NpuServiceClient {
     private static final java.util.concurrent.atomic.AtomicLong LOCK_WAIT_MAX_US =
             new java.util.concurrent.atomic.AtomicLong();
 
+    public static void recordPrepareUs(long us) { PREPARE_US.addAndGet(Math.max(0L, us)); }
+    public static void recordAssembleUs(long us) { ASSEMBLE_US.addAndGet(Math.max(0L, us)); }
+
     public static String contentionSummary() {
         long n = Math.max(1, IN_LOCK_N.get());
         return "lock_wait_avg_us=" + (LOCK_WAIT_US.get() / n)
@@ -246,7 +256,8 @@ public final class NpuServiceClient {
     }
 
     public static MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
-        long tWait0 = System.nanoTime();
+        final long total0 = System.nanoTime();
+        long tWait0 = total0;
         SUBMIT_LOCK.lock();
         long waitUs = (System.nanoTime() - tWait0) / 1000;
         LOCK_WAIT_US.addAndGet(waitUs);
@@ -290,6 +301,7 @@ public final class NpuServiceClient {
                 byte[] c = new byte[cbytes];
                 readFully(in, c, cbytes);
                 long tEnd = System.nanoTime();
+                TOTAL_US.addAndGet((tEnd - total0) / 1000);
                 // Split the round trip: send / service / receive. Without this the only number we
                 // had was the total, and "the service is slow" and "we waste time shuffling bytes"
                 // need opposite fixes. svc is the service's own QNN timing, for comparison.
