@@ -57,10 +57,28 @@ public final class NpuParity {
     });
 
     private static final Object LOCK = new Object();
+    /**
+     * Log at most once per reason why parity is not running.
+     *
+     * A harness that silently does nothing is worse than one that fails loudly: the
+     * gate can then never open and the reason stays invisible. Each distinct reason
+     * is reported once, so this cannot spam the log.
+     */
+    private static void noteSkipped(String why) {
+        boolean first;
+        synchronized (LOCK) { first = SKIP_REASONS.add(why); }
+        if (!first) return;
+        NpuLog.log("parity: not running - " + why);
+        last = "not run (" + why + ")";
+    }
+
     private static long seen;
     private static int runs;
     private static int passes;
     private static volatile String last = "not run";
+    /** Reasons we declined to measure, so each is reported once instead of never. */
+    private static final java.util.Set<String> SKIP_REASONS =
+            java.util.Collections.newSetFromMap(new java.util.concurrent.ConcurrentHashMap<>());
 
     private NpuParity() {}
 
@@ -89,8 +107,17 @@ public final class NpuParity {
             // and comparing it with ourselves would prove nothing.
             if (NpuTerrainGate.isTakeoverAllowed()) return;
 
-            if (!NpuTerrainVanilla.ready()) return;
-            if (NpuDfJson.lastUnsupported() != 0) return;
+            // Say once why we are not measuring. Silence here is the worst outcome:
+            // the gate stays closed forever and nobody knows which precondition failed.
+            if (!NpuTerrainVanilla.ready()) {
+                noteSkipped("tree not built - final_density was never loaded");
+                return;
+            }
+            if (NpuDfJson.lastUnsupported() != 0) {
+                noteSkipped("tree has " + NpuDfJson.lastUnsupported()
+                        + " unsupported node(s) - parity is meaningless until they are implemented");
+                return;
+            }
 
             final int run;
             synchronized (LOCK) {
