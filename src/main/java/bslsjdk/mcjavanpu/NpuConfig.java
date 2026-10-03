@@ -103,7 +103,15 @@ public final class NpuConfig {
             // 2 (5x5 = 25 sections) is the largest batch that stays comfortably inside the
             // IPC payload cap, so clamp here rather than trusting a hand-edited file.
             lightFoldRadius = Math.max(0, Math.min(2, lightFoldRadius));
-            lightMode = pr.getProperty("lightMode", "assist");
+            // Default is vanilla, and that is a deliberate decision rather than a
+            // cautious one. The light path was measured end to end: bad=0/65536
+            // (the NPU reproduces the CPU reference exactly) together with
+            // written=0 (nothing was ever brighter than vanilla). A linear
+            // smoothing operator over an already-converged BFS light field cannot
+            // produce a higher value, so this path cannot do useful work. Leaving
+            // it on by default would only cost 10-38ms per call during chunk
+            // loading. It stays selectable for anyone who wants to keep measuring.
+            lightMode = pr.getProperty("lightMode", "vanilla");
             chunkMode = pr.getProperty("chunkMode", "assist");
             NpuLog.log("config loaded from " + p);
         } catch (Throwable t) {
