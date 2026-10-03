@@ -21,6 +21,25 @@ import java.util.Map;
  */
 public final class NpuDfJson {
 
+    /**
+     * Unsupported node count from the most recent build.
+     *
+     * Kept statically because the terrain gate needs it at write time, long after
+     * the Build object is gone. Every unsupported node is silently turned into a
+     * constant 0, so a tree that "built fine" can still be quietly wrong - this
+     * is the number that says so. -1 means no build has happened yet.
+     */
+    private static volatile int lastUnsupported = -1;
+    private static volatile String lastTypes = "";
+
+    public static int lastUnsupported() { return lastUnsupported; }
+    public static String lastUnsupportedTypes() { return lastTypes; }
+
+    private static void noteUnsupported(int n, Map<String, Integer> types) {
+        lastUnsupported = n;
+        lastTypes = String.valueOf(types);
+    }
+
     private NpuDfJson() {}
 
     public static final class Build {
@@ -54,6 +73,7 @@ public final class NpuDfJson {
         if (json == null) {
             b.unsupported++;
             b.unsupportedTypes.merge("missing:" + key, 1, Integer::sum);
+            noteUnsupported(b.unsupported, b.unsupportedTypes);
             return NpuDf.constant(0.0);
         }
         NpuDf built = build(json, seed, b, memo);
@@ -63,6 +83,7 @@ public final class NpuDfJson {
 
     public static Build buildTree(String rootJson, long seed) {
         Build b = new Build();
+        lastUnsupported = 0; lastTypes = "";
         b.root = build(rootJson, seed, b, new HashMap<>());
         return b;
     }
@@ -74,6 +95,7 @@ public final class NpuDfJson {
         } catch (Exception e) {
             b.unsupported++;
             b.unsupportedTypes.merge("parse", 1, Integer::sum);
+            noteUnsupported(b.unsupported, b.unsupportedTypes);
             return NpuDf.constant(0.0);
         }
         return buildObject(o, seed, b, memo);
@@ -182,6 +204,7 @@ public final class NpuDfJson {
             default:
                 b.unsupported++;
                 b.unsupportedTypes.merge(type, 1, Integer::sum);
+            noteUnsupported(b.unsupported, b.unsupportedTypes);
                 return NpuDf.constant(0.0);
         }
     }
