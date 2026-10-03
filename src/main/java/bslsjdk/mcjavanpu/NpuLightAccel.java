@@ -58,9 +58,23 @@ public final class NpuLightAccel {
         public final int bad;
         public final float maxAbs;
         public final int m, k, n;
+        /** Raw int8 output, m*n row-major. Null when the call failed. */
+        public final byte[] out;
+        /** Multiplier that turns the raw int8 back into light units. */
+        public final float scale;
         Result(boolean ok, String error, long npuUs, long cpuUs, int bad, float maxAbs, int m, int k, int n) {
+            this(ok, error, npuUs, cpuUs, bad, maxAbs, m, k, n, null, 0f);
+        }
+        Result(boolean ok, String error, long npuUs, long cpuUs, int bad, float maxAbs, int m, int k, int n, byte[] out, float scale) {
             this.ok = ok; this.error = error; this.npuUs = npuUs; this.cpuUs = cpuUs;
             this.bad = bad; this.maxAbs = maxAbs; this.m = m; this.k = k; this.n = n;
+            this.out = out; this.scale = scale;
+        }
+        /** Row r, column j, converted back to light units and clamped to 0..15. */
+        public int light(int r, int j) {
+            if (out == null) return 0;
+            int v = Math.round(out[r * n + j] * scale);
+            return v < 0 ? 0 : (v > 15 ? 15 : v);
         }
         public double speedup() { return cpuUs <= 0 ? 0.0 : cpuUs / (double) Math.max(1, npuUs); }
         public String summary() {
@@ -103,7 +117,7 @@ public final class NpuLightAccel {
                 if (d > maxAbs) maxAbs = d;
             }
         }
-        return new Result(true, null, npuUs, cpuUs, bad, maxAbs, sh[0], sh[1], sh[2]);
+        return new Result(true, null, npuUs, cpuUs, bad, maxAbs, sh[0], sh[1], sh[2], c, r.scaleC());
     }
 
     /**
