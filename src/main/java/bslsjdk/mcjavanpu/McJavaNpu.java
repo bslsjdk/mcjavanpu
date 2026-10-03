@@ -281,6 +281,54 @@ public final class McJavaNpu implements ModInitializer {
     }
 
     /**
+     * Force the game to throw its light away and build it again, for (2r+1)^2 sections.
+     *
+     * Without this, switching a mode changes nothing you can see: chunks that are
+     * already lit keep the light they were computed with, by whichever mode was active
+     * back then. Toggling setLightEnabled off and on is the engine's own "recompute this
+     * section" switch, so the comparison is apples to apples.
+     */
+    private static int runReloadChunks(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                       int radius) {
+        String info;
+        try {
+            Object level = context.getSource().getLevel();
+            Object le = level.getClass().getMethod("getLightEngine").invoke(level);
+            Object pos = context.getSource().getClass().getMethod("getPosition").invoke(context.getSource());
+            Class<?> pc = pos.getClass();
+            int bx = (int) Math.floor(((Number) pc.getField("x").get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) pc.getField("y").get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
+            Class<?> sp = Class.forName("net.minecraft.core.SectionPos");
+            java.lang.reflect.Method spOf = sp.getMethod("of", int.class, int.class, int.class);
+            java.lang.reflect.Method setEnabled = le.getClass().getMethod("setLightEnabled", sp, boolean.class);
+            int scx = bx >> 4, scy = by >> 4, scz = bz >> 4;
+
+            int done = 0;
+            // Vertical sweep too: light lives in 3D sections, and a player on the surface
+            // mostly cares about the few sections under and around them.
+            for (int dy = -1; dy <= 1; dy++) {
+                for (int dx = -radius; dx <= radius; dx++) {
+                    for (int dz = -radius; dz <= radius; dz++) {
+                        Object sec = spOf.invoke(null, scx + dx, scy + dy, scz + dz);
+                        setEnabled.invoke(le, sec, false);
+                        setEnabled.invoke(le, sec, true);
+                        done++;
+                    }
+                }
+            }
+            info = "mode_light=" + NpuConfig.get().lightMode + " mode_chunk=" + NpuConfig.get().chunkMode
+                    + " forced_recompute=" + done + " sections";
+        } catch (Throwable t) {
+            info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
+        }
+        final String line = "[NPU] reloadchunks " + info;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        NpuLog.log(line);
+        return 0;
+    }
+
+    /**
      * Read (2r+1)^2 whole chunk sections -> fold into ONE NPU batch -> write back.
      *
      * apply=false : read-only probe, nothing in the world changes.
@@ -597,6 +645,11 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("reloadchunks")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runReloadChunks(context, 2))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(0, 8))
+                                .executes(context -> runReloadChunks(context, IntegerArgumentType.getInteger(context, "radius")))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
