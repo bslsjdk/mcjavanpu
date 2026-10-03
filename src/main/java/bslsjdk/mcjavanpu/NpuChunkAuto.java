@@ -42,6 +42,7 @@ public final class NpuChunkAuto {
     private static final AtomicLong DROPPED = new AtomicLong();
     private static final AtomicLong SKIPPED = new AtomicLong();
     private static volatile int ticksSinceFlush;
+    private static volatile int heartbeatTicks;
     private static volatile int lastBatchSize;
 
     private NpuChunkAuto() {}
@@ -86,6 +87,17 @@ public final class NpuChunkAuto {
         // Always drain at a fixed, small rate. This is the only place NPU chunk work runs,
         // and it runs on the server thread, so the rate limit is what keeps loading smooth.
         NpuWorkQueue.pump();
+
+        // One rolling line a minute. A long session is otherwise unreadable, and this is the line
+        // that answers "is it degraded, is the service up, is anything even happening".
+        if (++heartbeatTicks >= 1200) {
+            heartbeatTicks = 0;
+            NpuLog.log("heartbeat | " + summary() + " | guard="
+                    + (NpuGuard.isDegraded() ? "DEGRADED(" + NpuGuard.reason() + ")" : "ok")
+                    + " | service=" + (NpuServiceClient.healthy() ? "UP" : "DOWN")
+                    + " | " + NpuTelemetry.summary()
+                    + " | " + NpuGuard.summary());
+        }
     }
 
     /**
