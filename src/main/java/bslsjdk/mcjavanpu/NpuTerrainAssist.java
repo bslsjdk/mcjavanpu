@@ -49,6 +49,15 @@ public final class NpuTerrainAssist {
     /** Overworld chunk shape this path serves. */
     private static final int DEF_SX = 16, DEF_SY = 384, DEF_SZ = 16;
 
+    /**
+     * Vanilla's own interpolated cell sizes for the overworld.
+     *
+     * These are NOT ours to choose. final_density is "interpolated" with cell_size_xz=4 and
+     * cell_size_y=8; evaluating on a different lattice would change the terrain, which is exactly
+     * the mistake the previous implementation made.
+     */
+    private static final int DEF_STEP_XZ = 4, DEF_STEP_Y = 8;
+
     private static final class Prepared {
         final float[] density;
         final int sx, sy, sz;
@@ -146,9 +155,29 @@ public final class NpuTerrainAssist {
                     seeds[i] = (cx * 341873128712L) ^ (cz * 132897987541L) ^ (minY * 42317861L);
                 }
 
+                // Vanilla maths, evaluated here in the background.
+                //
+                // This used to call NpuTerrainLattice, which invented its own noise and therefore
+                // produced a different world for the same seed. The volumes are now evaluated from
+                // the game's own final_density tree, and the sampling lattice is the one the game
+                // uses (step 4/8/4), not one chosen to flatter the NPU. What the game gets back is
+                // vanilla's answer; the only thing that changed is where it was computed.
+                float[][] vols = new float[n][];
                 long[] npuUs = new long[1], prepUs = new long[1], interpUs = new long[1];
-                float[][] vols = NpuTerrainLattice.generateMulti(n, cxs, czs, oys, seeds,
-                        DEF_SX, DEF_SY, DEF_SZ, npuUs, prepUs, interpUs);
+                long tGen = System.nanoTime();
+                for (int i = 0; i < n; i++) {
+                    vols[i] = NpuTerrainVanilla.fill(DEF_SX, DEF_SY, DEF_SZ,
+                            cxs[i] << 4, oys[i], czs[i] << 4, seeds[i],
+                            DEF_STEP_XZ, DEF_STEP_Y, DEF_STEP_XZ);
+                }
+                interpUs[0] = (System.nanoTime() - tGen) / 1000;
+                if (vols[0] == null) {
+                    FAILED.incrementAndGet();
+                    NpuLog.log("prefetch: vanilla tree unavailable (" + NpuTerrainVanilla.failReason()
+                            + "), falling back to per-chunk vanilla generation");
+                    continue;
+                }
+                BUILT.addAndGet(n);
                 if (vols.length != n) { FAILED.incrementAndGet(); lastError = "short batch"; continue; }
 
                 for (int i = 0; i < n; i++) {
