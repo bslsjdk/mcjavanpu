@@ -416,6 +416,17 @@ public final class McJavaNpu implements ModInitializer {
      */
     private static int runLightFold(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int radius) {
         String info;
+        // Chunk work follows chunkMode the same way light follows lightMode:
+        //   vanilla - hand back to the game, do not touch a thing
+        //   npu     - the folded batch owns the section light and is written back
+        //   assist  - the batch is computed and reported, the game still owns the result
+        final String cmode = NpuConfig.get().chunkMode;
+        if ("vanilla".equalsIgnoreCase(cmode)) {
+            final String line = "[NPU] lightfold mode=vanilla (skipped, the game loads chunks itself)";
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            NpuLog.log(line);
+            return 0;
+        }
         try {
             Object level = context.getSource().getLevel();
             Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
@@ -462,7 +473,7 @@ public final class McJavaNpu implements ModInitializer {
                 info = "no DataLayer in range (sections not loaded)";
             } else {
                 NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
-                info = "folded sections=" + sections + " rows=" + rows + " nonzero=" + nzTotal + " | " + r.summary();
+                info = "mode=" + cmode + " folded sections=" + sections + " rows=" + rows + " nonzero=" + nzTotal + " | " + r.summary();
             }
         } catch (Throwable t) {
             info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
