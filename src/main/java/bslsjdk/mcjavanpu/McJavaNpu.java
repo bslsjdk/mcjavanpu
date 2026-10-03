@@ -554,8 +554,33 @@ public final class McJavaNpu implements ModInitializer {
                 if (!r.ok) {
                     info = "FAIL " + r.error;
                 } else if (!"npu".equalsIgnoreCase(cmode)) {
-                    info = "mode=" + cmode + " folded sections=" + sections + " rows=" + rows
-                            + " nonzero=" + nzTotal + " | " + r.summary();
+                    // ASSIST for chunk work: same contract as light assist - the NPU raises
+                    // what it can and the CPU keeps its own propagation, so the two work
+                    // together rather than one waiting on the other.
+                    int raised = 0, row = 0;
+                    for (Object dl : layers) {
+                        java.lang.reflect.Method gv = dl.getClass().getMethod("get", int.class, int.class, int.class);
+                        java.lang.reflect.Method st = dl.getClass().getMethod("set", int.class, int.class, int.class, int.class);
+                        for (int sy = 0; sy < 2; sy++)
+                            for (int sz = 0; sz < 2; sz++)
+                                for (int sx = 0; sx < 2; sx++) {
+                                    for (int y = 0; y < 8; y++)
+                                        for (int z = 0; z < 8; z++)
+                                            for (int x = 0; x < 8; x++) {
+                                                int v = r.light(row, (y * 8 + z) * 8 + x);
+                                                if (v <= 0) continue;
+                                                int cur = ((Number) gv.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z)).intValue();
+                                                if (v > cur) {
+                                                    st.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z, v);
+                                                    raised++;
+                                                }
+                                            }
+                                    row++;
+                                }
+                    }
+                    info = "mode=" + cmode + " ASSIST folded sections=" + sections + " rows=" + rows
+                            + " nonzero=" + nzTotal + " raised=" + raised + "/" + (rows * NpuLightAccel.CELLS)
+                            + " (cpu continues from this)" + " | " + r.summary();
                 } else {
                     int written = 0, row = 0;
                     for (Object dl : layers) {
