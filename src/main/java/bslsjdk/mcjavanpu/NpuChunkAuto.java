@@ -124,6 +124,7 @@ public final class NpuChunkAuto {
                     + " | " + NpuGuard.summary()
                     + " | " + NpuServiceClient.ioSummary()
                     + " | " + NpuServiceClient.lockSummary()
+                    + " | " + NpuServiceClient.contentionSummary()
                     + " | " + NpuTerrainVanilla.summary());
         }
     }
