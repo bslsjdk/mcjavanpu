@@ -244,6 +244,24 @@ public final class NpuTerrainAssist {
         return null;
     }
 
+    /**
+     * Queue a chunk for background generation without counting it as an assist miss.
+     *
+     * Takeover uses this. It is deliberately fire-and-forget: no return value, no waiting, no
+     * exception, so a caller on the game thread cannot be delayed by it. Requests beyond the
+     * queue capacity are dropped, which is the correct failure mode - the game keeps generating
+     * terrain with vanilla, and the next chunk along will probably fit.
+     */
+    public static void request(int cx, int cz, int sx, int sy, int sz, int minY) {
+        NpuConfig cfg = NpuConfig.get();
+        if (cfg == null || !cfg.enabled) return;
+        if (!NpuServiceClient.healthy()) return;
+        if (!workerStarted) ensureWorker();
+        long k = key(cx, cz, minY);
+        if (CACHE.containsKey(k)) return;
+        if (!REQUESTED.offer(k)) DROPPED.incrementAndGet();
+    }
+
     public static String summary() {
         long h = HITS.get(), m = MISSES.get();
         double rate = (h + m) == 0 ? 0 : h * 100.0 / (h + m);
