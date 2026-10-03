@@ -50,7 +50,7 @@ public final class NpuChunkWork {
             Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
             for (Object o : ll.getEnumConstants()) if ("BLOCK".equals(String.valueOf(o))) layer = o;
             if (engine == null || layer == null) return false;
-            if (!NpuServiceClient.isAvailable()) return false;
+            if (!NpuServiceClient.healthy()) return false;
 
             // getLayerListener(LightLayer) -> LayerLightEventListener -> getDataLayerData(SectionPos)
             Object listener = null;
