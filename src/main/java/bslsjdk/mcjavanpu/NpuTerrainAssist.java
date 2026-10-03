@@ -87,6 +87,8 @@ public final class NpuTerrainAssist {
     private static final AtomicLong BATCHES = new AtomicLong();
     private static final AtomicLong LAST_BATCH = new AtomicLong();
     private static final AtomicLong DROPPED = new AtomicLong();
+    /** Requests refused outright because the gate is closed: work we never started. */
+    private static final AtomicLong SKIPPED_GATE = new AtomicLong();
     private static final AtomicLong FAILED = new AtomicLong();
     private static volatile boolean workerStarted;
     private static volatile String lastError = "";
@@ -342,6 +344,9 @@ public final class NpuTerrainAssist {
     public static void requestWorkSet(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
+        // 81 chunks of density evaluation per call, all of it discarded if the
+        // gate is closed. Ask first.
+        if (!NpuTerrainGate.worthComputing()) { SKIPPED_GATE.incrementAndGet(); return; }
         if (!workerStarted) ensureWorker();
 
         int half = WORK_SET_SIDE / 2;
@@ -370,6 +375,10 @@ public final class NpuTerrainAssist {
     public static void request(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
+        // Nothing we compute can be written while the gate is closed, so do not
+        // start. This is the check that stops the mod burning CPU in the default
+        // configuration.
+        if (!NpuTerrainGate.worthComputing()) { SKIPPED_GATE.incrementAndGet(); return; }
         if (!NpuServiceClient.healthy()) return;
         if (!workerStarted) ensureWorker();
         long k = key(cx, cz, minY);
