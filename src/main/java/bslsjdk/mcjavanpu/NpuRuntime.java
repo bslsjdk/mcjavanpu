@@ -95,6 +95,20 @@ public final class NpuRuntime {
         return NpuServiceClient.matMulInt8(m,k,n);
     }
 
+    /** Result of a real-data int8 matmul: dequantize with scaleC. */
+    public record MatMulResult(float scaleC, byte[] c, long us, String error){
+        public boolean ok(){ return error == null; }
+    }
+
+    /**
+     * Real data path: caller-side int8 tensors (normalized to [-1,1]) go straight
+     * to the HTP and the raw int8 result comes back. Use scaleC to dequantize.
+     */
+    public static MatMulResult submitMatMulInt8(byte[] a,byte[] b,int m,int k,int n){
+        if(!isAvailable()) return new MatMulResult(0,null,0,"MCNPU_OFFLINE "+getDeviceInfo());
+        return NpuServiceClient.submitBinMatMul8(a,b,m,k,n);
+    }
+
     public static synchronized void shutdown(){HtpBackend.getInstance().close();}
 
     static synchronized void shutdownInternal(){
