@@ -2,6 +2,7 @@ package bslsjdk.mcjavanpu;
 
 import com.mojang.brigadier.CommandDispatcher;
 import com.mojang.brigadier.arguments.IntegerArgumentType;
+import com.mojang.brigadier.arguments.StringArgumentType;
 import net.fabricmc.api.ModInitializer;
 import net.fabricmc.fabric.api.command.v2.CommandRegistrationCallback;
 import net.minecraft.commands.CommandSourceStack;
@@ -357,6 +358,28 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightChunk(context, 128))
                         .then(Commands.argument("blocks", IntegerArgumentType.integer(1, 512))
                                 .executes(context -> runLightChunk(context, IntegerArgumentType.getInteger(context, "blocks")))))
+                .then(Commands.literal("config")
+                        .executes(context -> {
+                            final String line = "[NPU] " + NpuConfig.get().describe() + " log=" + NpuLog.getPathString();
+                            context.getSource().sendSuccess(() -> Component.literal(line), false);
+                            NpuLog.log(line);
+                            return 1;
+                        })
+                        .then(Commands.literal("toggle")
+                                .then(Commands.argument("key", StringArgumentType.word())
+                                        .executes(context -> {
+                                            String k = StringArgumentType.getString(context, "key");
+                                            NpuConfig.get().toggle(k);
+                                            final String line = "[NPU] toggled " + k + " -> " + NpuConfig.get().describe();
+                                            context.getSource().sendSuccess(() -> Component.literal(line), false);
+                                            NpuLog.log(line);
+                                            return 1;
+                                        })))
+                        .then(Commands.literal("save").executes(context -> {
+                            NpuConfig.get().save();
+                            context.getSource().sendSuccess(() -> Component.literal("[NPU] config saved"), false);
+                            return 1;
+                        })))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
