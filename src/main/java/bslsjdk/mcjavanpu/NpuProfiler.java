@@ -40,7 +40,7 @@ public final class NpuProfiler {
         final long end = System.currentTimeMillis() + seconds * 1000L;
         final Map<String, long[]> counts = new HashMap<>();
         final Map<String, Map<String, Long>> perThread = new HashMap<>();
-        long samples = 0;
+        final java.util.concurrent.atomic.AtomicLong samples = new java.util.concurrent.atomic.AtomicLong();
 
         Thread t = new Thread(() -> {
             while (System.currentTimeMillis() < end) {
@@ -57,7 +57,7 @@ public final class NpuProfiler {
                                  .merge(name, 1L, Long::sum);
                     }
                 }
-                samples++;
+                samples.incrementAndGet();
                 try { Thread.sleep(3); } catch (InterruptedException ie) { break; }
             }
             running = false;
@@ -72,7 +72,7 @@ public final class NpuProfiler {
         ranked.sort((a, b) -> Long.compare(b.getValue()[0], a.getValue()[0]));
 
         StringBuilder sb = new StringBuilder();
-        sb.append("profile over ").append(seconds).append("s, ").append(samples).append(" passes");
+        sb.append("profile over ").append(seconds).append("s, ").append(samples.get()).append(" passes");
         long total = 0;
         for (Map.Entry<String, long[]> e : ranked) total += e.getValue()[0];
         sb.append(", ").append(total).append(" hits\n");
