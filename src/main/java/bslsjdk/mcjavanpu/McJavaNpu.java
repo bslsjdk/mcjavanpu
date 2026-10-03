@@ -184,10 +184,13 @@ public final class McJavaNpu implements ModInitializer {
             int bz = (int) Math.floor(((Number) fz.get(pos)).doubleValue());
 
             Class<?> llCls = Class.forName("net.minecraft.world.level.LightLayer");
-            Object blockLayer = null;
+            Object blockLayer = null, skyLayer = null;
             Object[] consts = llCls.getEnumConstants();
             if (consts != null) {
-                for (Object o : consts) if ("BLOCK".equals(String.valueOf(o))) { blockLayer = o; break; }
+                for (Object o : consts) {
+                    if ("BLOCK".equals(String.valueOf(o))) blockLayer = o;
+                    if ("SKY".equals(String.valueOf(o))) skyLayer = o;
+                }
             }
             if (blockLayer == null) throw new IllegalStateException("LightLayer.BLOCK missing");
 
