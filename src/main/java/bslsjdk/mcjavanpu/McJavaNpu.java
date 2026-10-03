@@ -90,6 +90,66 @@ public final class McJavaNpu implements ModInitializer {
         return result.startsWith("OK ") ? 1 : 0;
     }
 
+    /**
+     * Shape-planned real-data submit: the caller gives the LOGICAL shape and
+     * NpuDispatcher pads it to the hardware-friendly shape, runs one call, then
+     * crops back. Reports both the logical and the planned shape.
+     */
+    private static int runSubmitPlanned(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                        int mActual, int kActual, int nActual) {
+        byte[] A = new byte[mActual * kActual];
+        byte[] B = new byte[kActual * nActual];
+        java.util.Random rnd = new java.util.Random(1234);
+        rnd.nextBytes(A);
+        rnd.nextBytes(B);
+
+        int[] sh = NpuDispatcher.planShape(mActual, kActual, nActual);
+        int m = sh[0], k = sh[1], n = sh[2];
+        long padCells = (long) m * k + (long) k * n;
+
+        long t0 = System.nanoTime();
+        NpuRuntime.MatMulResult res = NpuDispatcher.submit(A, B, mActual, kActual, nActual);
+        long npuUs = (System.nanoTime() - t0) / 1000;
+        if (!res.ok()) {
+            final String err = res.error();
+            context.getSource().sendSuccess(() -> Component.literal("[NPU] planned FAILED: " + err), false);
+            return 0;
+        }
+
+        long t1 = System.nanoTime();
+        final float Q = 1.0e-6f;
+        float[] ref = new float[mActual * nActual];
+        for (int i = 0; i < mActual; i++) {
+            for (int p = 0; p < kActual; p++) {
+                int av = A[i * kActual + p];
+                for (int j = 0; j < nActual; j++) ref[i * nActual + j] += av * B[p * nActual + j] * Q;
+            }
+        }
+        long javaUs = (System.nanoTime() - t1) / 1000;
+
+        int bad = 0;
+        float maxAbs = 0f;
+        byte[] c = res.c();
+        for (int i = 0; i < mActual; i++) {
+            for (int j = 0; j < nActual; j++) {
+                float got = c[i * nActual + j] * res.scaleC();
+                float d = Math.abs(got - ref[i * nActual + j]);
+                if (d > 2.5f * res.scaleC() + 0.05f * Math.abs(ref[i * nActual + j])) bad++;
+                if (d > maxAbs) maxAbs = d;
+            }
+        }
+        final String line = "[NPU] planned logical=" + mActual + "x" + kActual + "x" + nActual
+                + " -> hw=" + m + "x" + k + "x" + n
+                + " pad_cells=" + padCells
+                + " npu_us=" + npuUs + " java_us=" + javaUs
+                + " speedup=" + String.format(java.util.Locale.ROOT, "%.2fx", javaUs / (double) Math.max(1, npuUs))
+                + " bad=" + bad + "/" + (mActual * nActual)
+                + " max_abs=" + String.format(java.util.Locale.ROOT, "%.4f", maxAbs);
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        System.out.println("[MCJavaNPU] " + line);
+        return bad == 0 ? 1 : 0;
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -144,6 +204,18 @@ public final class McJavaNpu implements ModInitializer {
                                     int s = IntegerArgumentType.getInteger(context, "size");
                                     return runSubmit(context, s, s, s);
                                 })))
+                .then(Commands.literal("submits")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        // Shape-planned submit: logical shape in, padded hw shape out.
+                        // Defaults to 100x256x256, which the planner lifts to 128x256x256.
+                        .executes(context -> runSubmitPlanned(context, 100, 256, 256))
+                        .then(Commands.argument("m", IntegerArgumentType.integer(1, 4096))
+                                .then(Commands.argument("k", IntegerArgumentType.integer(1, 4096))
+                                        .then(Commands.argument("n", IntegerArgumentType.integer(1, 4096))
+                                                .executes(context -> runSubmitPlanned(context,
+                                                        IntegerArgumentType.getInteger(context, "m"),
+                                                        IntegerArgumentType.getInteger(context, "k"),
+                                                        IntegerArgumentType.getInteger(context, "n")))))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
