@@ -92,6 +92,24 @@ public final class NpuServiceClient {
     }
 
     private static String readLineUtf8(InputStream is) throws IOException {
+        // Recycled buffer. The previous version allocated a stream and copied to a byte[] per line,
+        // on every submission; the data path should not allocate at all for a header.
+        byte[] b = LINE_BUF.get();
+        int n = 0;
+        int ch;
+        while ((ch = is.read()) >= 0) {
+            if (ch == '\n') break;
+            if (ch != '\r' && n < b.length) b[n++] = (byte) ch;
+        }
+        if (n == 0 && ch < 0) return null;
+        return new String(b, 0, n, StandardCharsets.UTF_8);
+    }
+
+    /** Reused header buffer; one per thread, never shared. */
+    private static final ThreadLocal<byte[]> LINE_BUF =
+            ThreadLocal.withInitial(() -> new byte[1024]);
+
+    private static String unusedReadLineUtf8(InputStream is) throws IOException {
         ByteArrayOutputStream buf = new ByteArrayOutputStream(128);
         int ch;
         while ((ch = is.read()) >= 0) {
