@@ -791,6 +791,29 @@ public final class McJavaNpu implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("guard")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuGuard.summary();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            return NpuGuard.isDegraded() ? 0 : 1;
+                        })
+                        .then(Commands.literal("reset")
+                                .executes(context -> {
+                                    NpuGuard.reset();
+                                    final String l = "[NPU] guard reset";
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    NpuLog.log(l);
+                                    return 1;
+                                })))
+                .then(Commands.literal("probe")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuAutoProbe.summary()
+                                    + " | last report in " + NpuLog.getPathString();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            return 1;
+                        }))
                 .then(Commands.literal("shape")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
