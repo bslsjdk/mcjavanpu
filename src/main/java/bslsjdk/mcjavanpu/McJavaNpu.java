@@ -231,27 +231,129 @@ public final class McJavaNpu implements ModInitializer {
             Object pos = src.getClass().getMethod("getPosition").invoke(src);
             Class<?> pc = pos.getClass();
             java.lang.reflect.Field fx = pc.getField("x"), fy = pc.getField("y"), fz = pc.getField("z");
+            int bx = (int) Math.floor(((Number) fx.get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) fy.get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) fz.get(pos)).doubleValue());
+
+            Class<?> llCls = Class.forName("net.minecraft.world.level.LightLayer");
+            Object blockLayer = null, skyLayer = null;
+            Object[] consts = llCls.getEnumConstants();
+            if (consts != null) {
+                for (Object o : consts) {
+                    if ("BLOCK".equals(String.valueOf(o))) blockLayer = o;
+                    if ("SKY".equals(String.valueOf(o))) skyLayer = o;
+                }
+            }
+            if (blockLayer == null) throw new IllegalStateException("LightLayer.BLOCK missing");
+
+            Class<?> bpCls = Class.forName("net.minecraft.core.BlockPos");
+            java.lang.reflect.Constructor<?> ctor = bpCls.getConstructor(int.class, int.class, int.class);
+            java.lang.reflect.Method getBrightness = level.getClass().getMethod("getBrightness", llCls, bpCls);
+            api = "getBrightness(LightLayer.BLOCK,BlockPos)";
+
+            cells = new byte[NpuLightAccel.CELLS];
+            nzBlock = 0; nzSky = 0; skyMax = 0;
+            int i = 0;
+            for (int y = 0; y < 8; y++)
+                for (int z = 0; z < 8; z++)
+                    for (int x = 0; x < 8; x++) {
+                        Object bp = ctor.newInstance(bx + x, by + y, bz + z);
+                        int bv = ((Number) getBrightness.invoke(level, blockLayer, bp)).intValue();
+                        int sv = skyLayer == null ? 0 : ((Number) getBrightness.invoke(level, skyLayer, bp)).intValue();
+                        if (bv > 0) nzBlock++;
+                        if (sv > 0) nzSky++;
+                        if (sv > skyMax) skyMax = sv;
+                        cells[i++] = (byte) (Math.max(bv, sv) & 0xFF);
+                    }
+        } catch (Throwable t) {
+            err = t.getClass().getSimpleName() + ": " + t.getMessage();
+        }
+
+        if (err != null) {
+            final String line = "[NPU] lightchunk READ_FAILED api=" + api + " -> " + err;
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            System.out.println("[MCJavaNPU] " + line);
+            return 0;
+        }
+
+        int mn = 255, mx = 0, sum = 0, nz = 0;
+        for (byte b : cells) { int v = b & 0xFF; if (v < mn) mn = v; if (v > mx) mx = v; sum += v; if (v > 0) nz++; }
+        final String stat = "real_light min=" + mn + " max=" + mx + " avg="
+                + String.format(java.util.Locale.ROOT, "%.2f", sum / (double) NpuLightAccel.CELLS)
+                + " nonzero=" + nz + "/512 (block " + nzBlock + ", sky " + nzSky + ", skyMax " + skyMax + ")";
+
+        long t0 = System.nanoTime();
+        NpuLightAccel.Result r = NpuLightAccel.propagateReal(cells, blocks);
+        long wallUs = (System.nanoTime() - t0) / 1000;
+
+        final String line = "[NPU] lightchunk " + stat + " | " + r.summary() + " wall_us=" + wallUs;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        System.out.println("[MCJavaNPU] " + line);
+        return r.ok ? 1 : 0;
+    }
+
+    /**
+     * Start a sampling profile in the background and drop the ranked result in the log.
+     * Deliberately asynchronous: a profiler that blocks the thread it is measuring lies.
+     */
+    private static int runProfile(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int seconds) {
+        if (NpuProfiler.isRunning()) {
+            final String l = "[NPU] profile already running";
+            context.getSource().sendSuccess(() -> Component.literal(l), false);
+            return 0;
+        }
+        NpuLog.log("profile start: " + seconds + "s");
+        Thread t = new Thread(() -> {
+            String r = NpuProfiler.sample(seconds);
+            NpuLog.log("profile done\n" + r);
+        }, "npu-profile");
+        t.setDaemon(true);
+        t.start();
+        final String line = "[NPU] profiling for " + seconds + "s - top frames will land in logs/mcjavanpu-npu.log";
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        return 1;
+    }
+
+    /**
+     * Force the game to throw its light away and build it again, for (2r+1)^2 sections.
+     *
+     * Without this, switching a mode changes nothing you can see: chunks that are
+     * already lit keep the light they were computed with, by whichever mode was active
+     * back then. Toggling setLightEnabled off and on is the engine's own "recompute this
+     * section" switch, so the comparison is apples to apples.
+     */
+    private static int runReloadChunks(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                       int radius) {
+        String info;
+        try {
+            Object level = context.getSource().getLevel();
+            Object le = level.getClass().getMethod("getLightEngine").invoke(level);
+            Object pos = context.getSource().getClass().getMethod("getPosition").invoke(context.getSource());
+            Class<?> pc = pos.getClass();
             int bx = (int) Math.floor(((Number) pc.getField("x").get(pos)).doubleValue());
             int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
 
-            // LightEngine exposes setLightEnabled(ChunkPos, boolean), NOT a SectionPos overload
-            // (that one is updateSectionStatus, which means something different). Toggling a
-            // whole chunk column off and on is the engine's own "throw this light away and
-            // rebuild it" path, which is exactly what a mode comparison needs.
+            // LightEngine exposes setLightEnabled(ChunkPos, boolean). There is no SectionPos
+            // overload - that is updateSectionStatus, which means something else entirely, and
+            // asking for the wrong one is what produced NoSuchMethodException here. Toggling a
+            // whole chunk column off and on is the engine's own "discard and rebuild this light"
+            // path, which is exactly what a mode comparison needs.
             Class<?> cp = Class.forName("net.minecraft.world.level.ChunkPos");
             java.lang.reflect.Constructor<?> cpNew = cp.getConstructor(int.class, int.class);
             java.lang.reflect.Method setEnabled = null;
             for (java.lang.reflect.Method m : le.getClass().getMethods()) {
                 if (m.getName().equals("setLightEnabled") && m.getParameterCount() == 2
-                        && m.getParameterTypes()[0] == cp && m.getParameterTypes()[1] == boolean.class) {
-                    setEnabled = m; break;
+                        && m.getParameterTypes()[0] == cp
+                        && m.getParameterTypes()[1] == boolean.class) {
+                    setEnabled = m;
+                    break;
                 }
             }
             if (setEnabled == null) throw new NoSuchMethodException("setLightEnabled(ChunkPos, boolean)");
-            int ccx = bx >> 4, ccz = bz >> 4;
 
+            int ccx = bx >> 4, ccz = bz >> 4;
+            int cap = Math.max(0, Math.min(radius, 4));
             int done = 0;
-            int cap = Math.max(1, Math.min(radius, 4));
             for (int dx = -cap; dx <= cap; dx++) {
                 for (int dz = -cap; dz <= cap; dz++) {
                     Object chunkPos = cpNew.newInstance(ccx + dx, ccz + dz);
@@ -261,7 +363,7 @@ public final class McJavaNpu implements ModInitializer {
                 }
             }
             info = "mode_light=" + NpuConfig.get().lightMode + " mode_chunk=" + NpuConfig.get().chunkMode
-                    + " forced_recompute=" + done + " sections";
+                    + " forced_recompute=" + done + " chunks";
         } catch (Throwable t) {
             info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
         }
