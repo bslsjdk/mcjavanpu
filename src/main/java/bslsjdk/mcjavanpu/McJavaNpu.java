@@ -30,6 +30,9 @@ public final class McJavaNpu implements ModInitializer {
         } catch (Throwable t) {
             NpuLog.error("auto hooks failed to register", t);
         }
+        // Diagnostics run on their own. Nothing here needs a command, and
+        // everything lands in the log file so a session can be analysed later.
+        try { NpuAutoProbe.start(); } catch (Throwable t) { NpuLog.error("autoprobe start failed", t); }
         NpuLog.log("dedicated log: " + NpuLog.getPathString());
     }
 
