@@ -83,8 +83,10 @@ public final class NpuChunkWork {
                 }
             }
 
-            int minSec = level.getMinSection();
-            int maxSec = level.getMaxSection();
+            // LevelHeightAccessor names these getMinSectionY/getMaxSectionY; there is no
+            // getMinSection() in this version. Both are inclusive section coordinates.
+            int minSec = level.getMinSectionY();
+            int maxSec = level.getMaxSectionY();
 
             // A 16^3 section is exactly 8 sub-blocks of 8^3, so one submission can carry all
             // eight rows and the batch overhead is paid once per section instead of eight times.
