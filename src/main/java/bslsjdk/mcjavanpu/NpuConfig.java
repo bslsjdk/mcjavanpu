@@ -53,7 +53,8 @@ public final class NpuConfig {
     public int lightFoldRadius = 1;
 
     /** vanilla | npu | assist */
-    public String lightMode = "assist";
+    /** Proven no-op on a converged BFS light field (bad=0, written=0). Off unless asked for. */
+    public String lightMode = "vanilla";
     /** vanilla | npu | assist */
     public String chunkMode = "assist";
 
