@@ -133,7 +133,7 @@ public final class NpuTerrainGen {
         long t1 = System.nanoTime();
         if (r.ok() && r.c() != null) {
             usedNpu = true;
-            float scale = r.scale();
+            float scale = r.scaleC();
             if (scale == 0f) scale = QA * QB;
             byte[] c = r.c();
             for (int p = 0; p < m; p++) dens[p] = c[p] * scale;
