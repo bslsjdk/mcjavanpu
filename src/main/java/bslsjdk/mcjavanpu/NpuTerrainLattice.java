@@ -110,6 +110,7 @@ public final class NpuTerrainLattice {
      * Output order matches DensitySampler.sampleVolumeNaive (z outer, x middle, y inner).
      */
     public static Result generate(int sx, int sy, int sz, int ox, int oy, int oz, long seed) {
+        long tStart = System.nanoTime();
         int lx = sx / CELL_XZ + 1;
         int lz = sz / CELL_XZ + 1;
         int ly = sy / CELL_Y + 1;
@@ -148,6 +149,7 @@ public final class NpuTerrainLattice {
         // The service caps a single tensor at max_elements (16384). A chunk lattice is 768*16 =
         // 12288, which fits, but the shape planner may pad m upward, so never assume it fits:
         // submit in row blocks and keep every individual tensor inside the budget.
+        long prepareUs = (System.nanoTime() - tStart) / 1000;
         long t0 = System.nanoTime();
         float[] lattice = new float[pts];
         boolean usedNpu = false;
@@ -214,6 +216,14 @@ public final class NpuTerrainLattice {
             }
         }
         long interpUs = (System.nanoTime() - t1) / 1000;
+
+        // One telemetry row per generated chunk: this is the data that decides what to attack
+        // next (feature prep, IPC, or the CPU interpolation that follows).
+        int[] sh = NpuDispatcher.planShape(pts, K, 1);
+        NpuTelemetry.record(pts, K, 1, sh[0], sh[1], sh[2],
+                0, prepareUs, npuUs, interpUs,
+                (long) pts * K + (long) K, (long) pts);
+
         return new Result(out, sx, sy, sz, pts, npuUs, interpUs, usedNpu, note);
     }
 
