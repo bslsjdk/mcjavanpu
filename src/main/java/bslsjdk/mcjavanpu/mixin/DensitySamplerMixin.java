@@ -1,6 +1,7 @@
 package bslsjdk.mcjavanpu.mixin;
 
 import bslsjdk.mcjavanpu.NpuConfig;
+import bslsjdk.mcjavanpu.NpuLog;
 import bslsjdk.mcjavanpu.NpuStats;
 import bslsjdk.mcjavanpu.NpuTerrainAssist;
 import bslsjdk.mcjavanpu.NpuTerrainLattice;
@@ -36,11 +37,31 @@ public abstract class DensitySamplerMixin {
      * and it matches how chunks actually load: the player walks, and the next chunk is a
      * neighbour, not something twenty chunks away.
      */
+    /** How many sampleVolume calls we have actually seen. Proves the hook is live. */
+    private static final java.util.concurrent.atomic.AtomicLong SEEN =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    public static long seenCount() { return SEEN.get(); }
+
     private static final int BATCH_SIDE = 2;
+
+    /**
+     * Proof of life.
+     *
+     * The injection is declared require = 0 so a Minecraft update costs us the hook rather than a
+     * crash. The downside is that a silently failed injection looks exactly like a working one from
+     * the outside: the game runs, nothing is accelerated, and nobody knows. This static block runs
+     * the moment Mixin actually applies the mixin, so its absence from the log is positive evidence
+     * that we are NOT hooked, rather than ambiguous silence.
+     */
+    static {
+        NpuLog.log("MIXIN_ACTIVE DensitySampler$Bound.sampleVolume hooked (require=0 was accepted)");
+    }
 
     @Inject(method = "sampleVolume", at = @At("HEAD"), cancellable = true, require = 0)
     private void mcjavanpu$onSampleVolume(DensityBuffer buffer, DensityVolume volume, CallbackInfo ci) {
         if (volume == null || buffer == null) return;
+        SEEN.incrementAndGet();
         NpuTerrainHook.onVolumeShape(volume.sizeX(), volume.sizeY(), volume.sizeZ());
 
         if (!NpuConfig.get().enabled) return;
