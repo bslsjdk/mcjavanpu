@@ -255,6 +255,150 @@ public final class NpuTerrainLattice {
         return new Result(out, sx, sy, sz, pts, npuUs, interpUs, usedNpu, note);
     }
 
+
+    /**
+     * Generates several chunks in ONE submission.
+     *
+     * This is the cross-chunk batching the review asked for, and the reason the lattice was
+     * widened: with 225 points per chunk at K=16, four chunks cost 14400 elements, which fits the
+     * 16384 budget. One call covers four chunks instead of four calls each paying their own fixed
+     * cost - which, given that the native side serialises on a global lock, is the only lever that
+     * actually raises throughput.
+     *
+     * All chunks must share the same volume shape; heterogeneous shapes go through the
+     * single-chunk path.
+     *
+     * outNpuUs / outPrepareUs / outInterpUs receive the split timings when non-null, so telemetry
+     * can still attribute cost per phase rather than lumping four chunks together.
+     */
+    public static float[][] generateMulti(int count, int[] cxs, int[] czs, int[] oys, long[] seeds,
+                                          int sx, int sy, int sz,
+                                          long[] outNpuUs, long[] outPrepareUs, long[] outInterpUs) {
+        if (count <= 0) return new float[0][];
+        int lx = sx / CELL_XZ + 1, lz = sz / CELL_XZ + 1, ly = sy / CELL_Y + 1;
+        int pts = lx * ly * lz;
+        int perChunk = pts * K;
+
+        // Fill in row blocks that respect the element budget, batching as many chunks per
+        // submission as the budget allows rather than assuming count fits.
+        int chunksPerSubmit = Math.max(1, MAX_ELEMENTS / perChunk);
+        float[][] out = new float[count][];
+        float[] latticeAll = new float[count * pts];
+        long totalNpu = 0, totalPrepare = 0;
+
+        for (int start = 0; start < count; start += chunksPerSubmit) {
+            int n = Math.min(chunksPerSubmit, count - start);
+            long tStart = System.nanoTime();
+
+            float[] feat = new float[n * pts * K];
+            for (int ci = 0; ci < n; ci++) {
+                int ox = cxs[start + ci] << 4;
+                int oz = czs[start + ci] << 4;
+                int oy = oys[start + ci];
+                long seed = seeds[start + ci];
+                float s1 = ((seed >>> 3) % 997) / 997f;
+                float s2 = ((seed >>> 11) % 991) / 991f;
+                int pi = 0;
+                for (int iy = 0; iy < ly; iy++) {
+                    for (int iz = 0; iz < lz; iz++) {
+                        for (int ix = 0; ix < lx; ix++) {
+                            int off = (ci * pts + pi) * K;
+                            features(feat, off, ox + ix * CELL_XZ, oy + iy * CELL_Y, oz + iz * CELL_XZ, s1, s2);
+                            pi++;
+                        }
+                    }
+                }
+            }
+            totalPrepare += (System.nanoTime() - tStart) / 1000;
+
+            final float SA = 1f / 127f;
+            float[] w = weights(seeds[start]);
+            byte[] ab = new byte[feat.length];
+            for (int p = 0; p < feat.length; p++) {
+                int q = Math.round(feat[p] / SA);
+                ab[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
+            }
+            byte[] bb = new byte[K];
+            for (int p = 0; p < K; p++) {
+                int q = Math.round(w[p] / SA);
+                bb[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
+            }
+
+            long t0 = System.nanoTime();
+            NpuRuntime.MatMulResult r = NpuDispatcher.submit(ab, bb, n * pts, K, 1);
+            totalNpu += (System.nanoTime() - t0) / 1000;
+
+            if (r.ok() && r.c() != null) {
+                float scale = r.scaleC();
+                if (scale == 0f) scale = SA * SA;
+                byte[] c = r.c();
+                for (int p = 0; p < n * pts; p++) latticeAll[start * pts + p] = c[p] * scale;
+            } else {
+                for (int ci = 0; ci < n; ci++) {
+                    for (int p = 0; p < pts; p++) {
+                        float sum = 0f;
+                        int base = ((ci * pts) + p) * K;
+                        for (int k = 0; k < K; k++) sum += feat[base + k] * w[k];
+                        latticeAll[(start + ci) * pts + p] = sum;
+                    }
+                }
+            }
+        }
+
+        long t1 = System.nanoTime();
+        for (int ci = 0; ci < count; ci++) {
+            float[] lat = new float[pts];
+            System.arraycopy(latticeAll, ci * pts, lat, 0, pts);
+            out[ci] = interpolate(lat, lx, ly, lz, sx, sy, sz);
+        }
+        long interpUs = (System.nanoTime() - t1) / 1000;
+
+        if (outNpuUs != null && outNpuUs.length > 0) outNpuUs[0] = totalNpu;
+        if (outPrepareUs != null && outPrepareUs.length > 0) outPrepareUs[0] = totalPrepare;
+        if (outInterpUs != null && outInterpUs.length > 0) outInterpUs[0] = interpUs;
+
+        int[] sh = NpuDispatcher.planShape(count * pts, K, 1);
+        NpuTelemetry.record(count * pts, K, 1, sh[0], sh[1], sh[2],
+                0, totalPrepare, totalNpu, interpUs,
+                (long) count * pts * K, (long) count * pts);
+        return out;
+    }
+
+    /** Trilinear fill in MC buffer order (z, x, y). Shared by both entry points. */
+    private static float[] interpolate(float[] lattice, int lx, int ly, int lz,
+                                       int sx, int sy, int sz) {
+        float[] out = new float[sx * sy * sz];
+        int oi = 0;
+        for (int z = 0; z < sz; z++) {
+            int iz = z / CELL_XZ;
+            float fz = (z % CELL_XZ) / (float) CELL_XZ;
+            for (int x = 0; x < sx; x++) {
+                int ix = x / CELL_XZ;
+                float fx = (x % CELL_XZ) / (float) CELL_XZ;
+                for (int y = 0; y < sy; y++) {
+                    int iy = y / CELL_Y;
+                    float fy = (y % CELL_Y) / (float) CELL_Y;
+                    float v000 = L(lattice, lx, ly, lz, ix, iy, iz);
+                    float v100 = L(lattice, lx, ly, lz, ix + 1, iy, iz);
+                    float v010 = L(lattice, lx, ly, lz, ix, iy + 1, iz);
+                    float v110 = L(lattice, lx, ly, lz, ix + 1, iy + 1, iz);
+                    float v001 = L(lattice, lx, ly, lz, ix, iy, iz + 1);
+                    float v101 = L(lattice, lx, ly, lz, ix + 1, iy, iz + 1);
+                    float v011 = L(lattice, lx, ly, lz, ix, iy + 1, iz + 1);
+                    float v111 = L(lattice, lx, ly, lz, ix + 1, iy + 1, iz + 1);
+                    float x00 = v000 + fx * (v100 - v000);
+                    float x10 = v010 + fx * (v110 - v010);
+                    float x01 = v001 + fx * (v101 - v001);
+                    float x11 = v011 + fx * (v111 - v011);
+                    float y0 = x00 + fy * (x10 - x00);
+                    float y1 = x01 + fy * (x11 - x01);
+                    out[oi++] = y0 + fz * (y1 - y0);
+                }
+            }
+        }
+        return out;
+    }
+
     private static float L(float[] lat, int lx, int ly, int lz, int ix, int iy, int iz) {
         if (ix >= lx) ix = lx - 1;
         if (iy >= ly) iy = ly - 1;
