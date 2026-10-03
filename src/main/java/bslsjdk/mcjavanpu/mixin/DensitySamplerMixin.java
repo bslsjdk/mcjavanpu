@@ -77,64 +77,31 @@ public abstract class DensitySamplerMixin {
             return;
         }
 
-        // Takeover: generate here and now, vanilla never runs.
+        // Takeover, done the only way it can be done without stuttering.
         //
-        // Batching is not optional here. One submission costs ~50 ms of fixed overhead
-        // (IPC round trip, graph lookup, QNN dispatch) regardless of how tiny the matrices are,
-        // and the volume of one chunk is 225 lattice points - far too little work to amortise
-        // that. The element budget allows exactly four chunks per call (4 x 225 x 16 = 14400 of
-        // 16384), so every miss generates the current chunk plus its three neighbours, serves
-        // this one immediately, and parks the rest. Chunk number two through four of the same
-        // batch then cost a map lookup instead of another 50 ms.
-        float[] parked = NpuTerrainAssist.peekTakeover(cx, cz, oy);
-        if (parked != null) {
-            int np = Math.min(buffer.size(), parked.length);
-            for (int i = 0; i < np; i++) buffer.set(i, parked[i]);
+        // The previous version generated the chunk inline. That was wrong, and the symptom was
+        // exactly what the player reported: a hitch every time new terrain appeared. One inline
+        // submission costs ~50 ms of fixed overhead (IPC + graph lookup + QNN dispatch) and that
+        // was being paid on the game thread, per chunk, in the middle of world generation.
+        //
+        // The rule is now absolute: the game thread never waits for the NPU. Look in the cache
+        // first - if the background batcher already produced this volume, take it, and vanilla
+        // never runs for this chunk (that is the "takeover" part). If it is not there yet, hand
+        // the request to the background queue and fall through to vanilla. The next time this
+        // terrain is touched the volume will be waiting, and by then the batcher has also done
+        // the neighbours and the walk-ahead, so the hit rate rises as the player moves.
+        float[] mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
+        if (mine != null) {
+            int n = Math.min(buffer.size(), mine.length);
+            for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
             NpuTerrainAssist.countTakeoverServed();
-            NpuStats.BLOCKS.record(np, 0, 0);
+            NpuStats.BLOCKS.record(n, 0, 0);
             ci.cancel();
             return;
         }
 
-        float[] mine = null;
-        long npuUs = 0, interpUs = 0;
-        long t0 = System.nanoTime();
-
-        int batchSize = Math.min(BATCH_SIDE * BATCH_SIDE,
-                NpuTerrainLattice.maxChunksPerSubmit(sx, sy, sz) * BATCH_SIDE * BATCH_SIDE);
-        batchSize = Math.max(1, Math.min(batchSize, 4));
-        int[] cxs = new int[batchSize];
-        int[] czs = new int[batchSize];
-        int[] oys = new int[batchSize];
-        long[] seeds = new long[batchSize];
-        for (int b = 0; b < batchSize; b++) {
-            int bx = cx + (b % BATCH_SIDE);
-            int bz = cz + (b / BATCH_SIDE);
-            cxs[b] = bx; czs[b] = bz; oys[b] = oy;
-            long bx0 = bx << 4, bz0 = bz << 4;
-            seeds[b] = bx0 * 341873128712L ^ bz0 * 132897987541L ^ oy * 42317861L;
-        }
-        long[] on = new long[1], op = new long[1], oi = new long[1];
-        float[][] batch = NpuTerrainLattice.generateMulti(batchSize, cxs, czs, oys, seeds,
-                sx, sy, sz, on, op, oi);
-        long wallUs = (System.nanoTime() - t0) / 1000;
-        npuUs = on[0]; interpUs = oi[0];
-        if (batch.length > 0) mine = batch[0];
-
-        if (mine == null) {
-            // Never take the world down with us: fall through to the vanilla sampler.
-            NpuStats.BLOCKS.record(buffer.size(), 0, wallUs);
-            return;
-        }
-
-        for (int b = 1; b < batch.length; b++) {
-            NpuTerrainAssist.put(cxs[b], czs[b], oys[b], batch[b]);
-        }
-        NpuTerrainAssist.countTakeoverBatch();
-
-        int n = Math.min(buffer.size(), mine.length);
-        for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
-        NpuStats.BLOCKS.record(n, npuUs + interpUs, wallUs);
-        ci.cancel();
+        // Bounded and non-blocking: it either lands in the queue or is dropped. Either way this
+        // call returns immediately.
+        NpuTerrainAssist.request(cx, cz, sx, sy, sz, oy);
     }
 }
