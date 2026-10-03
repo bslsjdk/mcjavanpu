@@ -27,6 +27,9 @@ import java.util.Locale;
  */
 public final class NpuTerrainLattice {
 
+    /** Tensor element budget reported by the service (CAPABILITIES max_elements). */
+    public static final int MAX_ELEMENTS = 16384;
+
     public static final int CELL_XZ = 4;
     public static final int CELL_Y = 8;
     /**
@@ -142,27 +145,41 @@ public final class NpuTerrainLattice {
             bb[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
         }
 
+        // The service caps a single tensor at max_elements (16384). A chunk lattice is 768*16 =
+        // 12288, which fits, but the shape planner may pad m upward, so never assume it fits:
+        // submit in row blocks and keep every individual tensor inside the budget.
         long t0 = System.nanoTime();
-        NpuRuntime.MatMulResult r = NpuDispatcher.submit(ab, bb, pts, K, 1);
-        long npuUs = (System.nanoTime() - t0) / 1000;
-
         float[] lattice = new float[pts];
         boolean usedNpu = false;
         String note = "";
-        if (r.ok() && r.c() != null) {
+        int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+        int done = 0;
+        while (done < pts) {
+            int rows = Math.min(rowsPerSubmit, pts - done);
+            byte[] chunk = new byte[rows * K];
+            System.arraycopy(ab, done * K, chunk, 0, rows * K);
+            NpuRuntime.MatMulResult r = NpuDispatcher.submit(chunk, bb, rows, K, 1);
+            if (!(r.ok() && r.c() != null)) {
+                usedNpu = false;
+                note = r.ok() ? "short result" : "npu unavailable, host lattice";
+                break;
+            }
             usedNpu = true;
             float scale = r.scaleC();
             if (scale == 0f) scale = SA * SB;
             byte[] c = r.c();
-            for (int p = 0; p < pts; p++) lattice[p] = c[p] * scale;
-        } else {
-            note = "npu unavailable, host lattice";
+            for (int p = 0; p < rows; p++) lattice[done + p] = c[p] * scale;
+            done += rows;
+        }
+        if (!usedNpu) {
+            note = note.isEmpty() ? "npu unavailable, host lattice" : note;
             for (int p = 0; p < pts; p++) {
                 float sum = 0f;
                 for (int k = 0; k < K; k++) sum += a[p * K + k] * w[k];
                 lattice[p] = sum;
             }
         }
+        long npuUs = (System.nanoTime() - t0) / 1000;
 
         long t1 = System.nanoTime();
         float[] out = new float[sx * sy * sz];
