@@ -125,7 +125,12 @@ public final class NpuTerrainGen {
         }
 
         long t0 = System.nanoTime();
-        NpuRuntime.MatMulResult r = NpuDispatcher.submit(a, b, m, K, 1);
+        // A full 16x384x16 chunk is 98304 rows, far above the native 65536 cap.
+        // submit() used to return ERR BUF_TOO_LARGE for every single chunk, so the
+        // NPU path never ran and the host fallback silently did all the work.
+        // submitSplit() runs independent row blocks instead. Rows are independent
+        // here by construction: row i depends only on point i.
+        NpuRuntime.MatMulResult r = NpuDispatcher.submitSplit(a, b, m, K, 1);
         long npuUs = (System.nanoTime() - t0) / 1000;
 
         float[] dens = new float[m];
@@ -139,7 +144,7 @@ public final class NpuTerrainGen {
             byte[] c = r.c();
             for (int p = 0; p < m; p++) dens[p] = c[p] * scale;
         } else {
-            note = "npu unavailable, host path";
+            note = "npu unavailable (" + (r.error() == null ? "?" : r.error()) + "), host path";
             for (int p = 0; p < m; p++) {
                 float s = 0f;
                 for (int k = 0; k < K; k++) s += feat[p * K + k] * w[k];
