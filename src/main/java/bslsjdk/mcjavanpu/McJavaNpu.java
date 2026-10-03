@@ -432,6 +432,7 @@ public final class McJavaNpu implements ModInitializer {
                 info = "no DataLayer in range (sections not loaded)";
             } else {
                 NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
+                NpuStats.LIGHT.record((long) rows * NpuLightAccel.CELLS, r.npuUs, r.cpuUs);
                 if (!r.ok) {
                     info = "FAIL " + r.error;
                 } else if (!writeBack) {
