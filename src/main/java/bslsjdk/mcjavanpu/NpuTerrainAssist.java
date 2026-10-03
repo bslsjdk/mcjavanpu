@@ -1,40 +1,53 @@
 package bslsjdk.mcjavanpu;
 
-import java.util.LinkedHashMap;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Map;
 import java.util.concurrent.ArrayBlockingQueue;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
  * Terrain, in assist mode.
  *
- * Assist cannot mean "compute half and hand it to vanilla", because vanilla does not read our
- * intermediates: it rebuilds the whole volume from its own tree. Computing anything inline is
- * therefore wasted unless we also take over the write.
+ * Assist cannot mean "compute half and hand it to vanilla": vanilla rebuilds the whole volume
+ * from its own tree and never reads our intermediates. So assist is time shifting:
  *
- * So assist is implemented as time shifting instead of work splitting:
+ *   background  ->  prepare chunk density before it is asked for
+ *   hit         ->  main thread copies and vanilla never runs for that chunk
+ *   miss        ->  vanilla runs, and the chunk is queued for next time
  *
- *   background thread  ->  NPU fills the density for chunks before they are needed
- *   cache hit          ->  the main thread just copies, and vanilla never runs
- *   cache miss         ->  vanilla runs, and the chunk is queued for next time
+ * Three rules keep this from becoming a regression, and each one exists because an earlier
+ * version broke it:
  *
- * Nothing on the main path ever waits for the NPU. A miss costs exactly what it cost before this
- * class existed, and a hit costs a memory copy. That is the only shape of "assist" that cannot
- * make the game slower.
+ *   1. the probe must not do network IO
+ *      A service availability check per probe opens a socket and waits for a reply. On the chunk
+ *      path that was a round trip per chunk on the main thread, which is simply slower than not
+ *      having this class at all. Health is now a cached flag.
  *
- * Cache entries are keyed by chunk and volume shape, so a chunk built at a different height or
- * with a different step is never served a wrong sized answer.
+ *   2. the probe must not allocate or lock
+ *      A record key per probe fed the collector, and an access-ordered LinkedHashMap inside a
+ *      synchronized block let the worker stall the game thread. The key is now packed into a
+ *      long and the cache is a ConcurrentHashMap read.
+ *
+ *   3. the worker must not compete for CPU
+ *      World load is already CPU saturated; a prefetch thread that runs flat out steals from the
+ *      thing it is trying to help. The rate is deliberately modest and the thread is low priority.
  */
 public final class NpuTerrainAssist {
 
-    /** How many prepared chunks to keep. ~98304 floats each, so this stays in the low MB. */
-    private static final int CACHE_CAP = 96;
-    /** Requests waiting on the background thread. Bounded: prefetch is an optimisation. */
+    /** Prepared chunks retained. Roughly 225 floats each, so this is a trivial amount of memory. */
+    private static final int CACHE_CAP = 256;
+    /** Requests waiting on the worker. Bounded: prefetch is an optimisation, never a backlog. */
     private static final int QUEUE_CAP = 256;
-    /** How many chunks the worker prepares per second. Keeps the service free for light. */
-    private static final long MIN_INTERVAL_MS = 8;
+    /**
+     * Gap between submissions. This is the CPU-sharing knob: larger means the prefetcher takes
+     * less of the machine while a world is loading, at the cost of a lower hit rate.
+     */
+    private static final long MIN_INTERVAL_MS = 30;
 
-    private record Key(int cx, int cz, int sx, int sy, int sz, int minY) {}
+    /** Overworld chunk shape this path serves. */
+    private static final int DEF_SX = 16, DEF_SY = 384, DEF_SZ = 16;
 
     private static final class Prepared {
         final float[] density;
@@ -44,31 +57,36 @@ public final class NpuTerrainAssist {
         }
     }
 
-    private static final Map<Key, Prepared> CACHE = new LinkedHashMap<>(256, 0.75f, true) {
-        @Override protected boolean removeEldestEntry(Map.Entry<Key, Prepared> eldest) {
-            return size() > CACHE_CAP;
-        }
-    };
+    private static final Map<Long, Prepared> CACHE = new ConcurrentHashMap<>();
+    private static final ArrayBlockingQueue<Long> REQUESTED = new ArrayBlockingQueue<>(QUEUE_CAP);
 
-    private static final ArrayBlockingQueue<Key> REQUESTED = new ArrayBlockingQueue<>(QUEUE_CAP);
     private static final AtomicLong HITS = new AtomicLong();
     private static final AtomicLong MISSES = new AtomicLong();
     private static final AtomicLong BUILT = new AtomicLong();
-    private static final AtomicLong DROPPED = new AtomicLong();
-    private static final AtomicLong FAILED = new AtomicLong();
     private static final AtomicLong BATCHES = new AtomicLong();
     private static final AtomicLong LAST_BATCH = new AtomicLong();
+    private static final AtomicLong DROPPED = new AtomicLong();
+    private static final AtomicLong FAILED = new AtomicLong();
     private static volatile boolean workerStarted;
     private static volatile String lastError = "";
 
     private NpuTerrainAssist() {}
+
+    /** Packs chunk and height into one long. Bit layout is fixed so both sides agree. */
+    private static long key(int cx, int cz, int minY) {
+        return ((long) cx << 40) ^ (((long) cz & 0xFFFFFFFL) << 16) ^ (minY & 0xFFFFL);
+    }
+
+    private static int keyCx(long k) { return (int) (k >> 40); }
+    private static int keyCz(long k) { return (int) ((k >> 16) & 0xFFFFFFFL); }
+    private static int keyMinY(long k) { return (short) (k & 0xFFFFL); }
 
     private static synchronized void ensureWorker() {
         if (workerStarted) return;
         workerStarted = true;
         Thread t = new Thread(NpuTerrainAssist::loop, "npu-terrain-assist");
         t.setDaemon(true);
-        t.setPriority(Thread.MIN_PRIORITY);   // never compete with the server or render thread
+        t.setPriority(Thread.MIN_PRIORITY);
         t.start();
         NpuLog.log("terrain assist worker started");
     }
@@ -76,46 +94,49 @@ public final class NpuTerrainAssist {
     private static void loop() {
         while (true) {
             try {
-                Key first = REQUESTED.take();
+                Long firstKey = REQUESTED.take();
+                if (firstKey == null) continue;
+
                 NpuConfig cfg = NpuConfig.get();
                 if (cfg == null || !cfg.enabled) continue;
                 if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) continue;
-                if (!NpuServiceClient.isAvailable()) continue;
+                // Only this thread touches the service, so this is where health is refreshed.
+                if (!NpuServiceClient.healthy() && !NpuServiceClient.isAvailable()) continue;
 
-                // Gather as many queued requests as the element budget allows for this shape and
-                // submit them together. Batching here rather than per chunk is the whole point:
-                // the native side serialises on one lock, so fewer, larger calls is the only way
-                // to raise throughput.
-                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(first.sx, first.sy, first.sz));
-                java.util.List<Key> batch = new java.util.ArrayList<>(room);
-                batch.add(first);
-                while (batch.size() < room) {
-                    Key next = REQUESTED.peek();
-                    if (next == null) break;
-                    if (next.sx != first.sx || next.sy != first.sy || next.sz != first.sz) break;
-                    if (next.minY != first.minY) break;
-                    batch.add(REQUESTED.take());
+                int minY = keyMinY(firstKey);
+
+                // Gather a whole submission's worth. Fewer, larger calls is the only lever that
+                // raises throughput, because the native side serialises on a global lock.
+                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(DEF_SX, DEF_SY, DEF_SZ));
+                List<Long> keys = new ArrayList<>(room);
+                keys.add(firstKey);
+                while (keys.size() < room) {
+                    Long next = REQUESTED.peek();
+                    if (next == null || keyMinY(next) != minY) break;
+                    keys.add(REQUESTED.take());
                 }
+
+                // Yield to the game before doing the work, not after.
                 Thread.sleep(MIN_INTERVAL_MS);
 
-                int n = batch.size();
+                int n = keys.size();
                 int[] cxs = new int[n], czs = new int[n], oys = new int[n];
                 long[] seeds = new long[n];
                 for (int i = 0; i < n; i++) {
-                    Key k = batch.get(i);
-                    cxs[i] = k.cx; czs[i] = k.cz; oys[i] = k.minY;
-                    seeds[i] = (k.cx * 341873128712L) ^ (k.cz * 132897987541L) ^ (k.minY * 42317861L);
+                    int cx = keyCx(keys.get(i)), cz = keyCz(keys.get(i));
+                    cxs[i] = cx; czs[i] = cz; oys[i] = minY;
+                    seeds[i] = (cx * 341873128712L) ^ (cz * 132897987541L) ^ (minY * 42317861L);
                 }
+
                 long[] npuUs = new long[1], prepUs = new long[1], interpUs = new long[1];
                 float[][] vols = NpuTerrainLattice.generateMulti(n, cxs, czs, oys, seeds,
-                        first.sx, first.sy, first.sz, npuUs, prepUs, interpUs);
+                        DEF_SX, DEF_SY, DEF_SZ, npuUs, prepUs, interpUs);
                 if (vols.length != n) { FAILED.incrementAndGet(); lastError = "short batch"; continue; }
 
-                synchronized (CACHE) {
-                    for (int i = 0; i < n; i++) {
-                        CACHE.put(batch.get(i), new Prepared(vols[i], first.sx, first.sy, first.sz));
-                    }
+                for (int i = 0; i < n; i++) {
+                    CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
                 }
+                if (CACHE.size() > CACHE_CAP * 2) CACHE.clear();
                 BUILT.addAndGet(n);
                 BATCHES.incrementAndGet();
                 LAST_BATCH.set(n);
@@ -129,36 +150,35 @@ public final class NpuTerrainAssist {
     }
 
     /**
-     * Main-thread probe. Never blocks, never computes.
+     * Main-thread probe. Allocation-free, lock-free, network-free by construction.
      *
-     * Returns the prepared density when it is ready, otherwise null and queues a prefetch.
+     * Returns prepared density when ready, otherwise null and queues a prefetch.
      */
     public static float[] take(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return null;
         if (!"assist".equalsIgnoreCase(cfg.chunkMode)) return null;
         if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) return null;
+        if (!NpuServiceClient.healthy()) return null;
 
-        Key k = new Key(cx, cz, sx, sy, sz, minY);
-        Prepared p;
-        synchronized (CACHE) { p = CACHE.get(k); }
+        long k = key(cx, cz, minY);
+        Prepared p = CACHE.get(k);
         if (p != null && p.sx == sx && p.sy == sy && p.sz == sz) {
             HITS.incrementAndGet();
             return p.density;
         }
         MISSES.incrementAndGet();
-        ensureWorker();
+        if (!workerStarted) ensureWorker();
         if (!REQUESTED.offer(k)) DROPPED.incrementAndGet();
         return null;
     }
 
     public static String summary() {
-        int size;
-        synchronized (CACHE) { size = CACHE.size(); }
         long h = HITS.get(), m = MISSES.get();
         double rate = (h + m) == 0 ? 0 : h * 100.0 / (h + m);
-        return "terrain_assist hits=" + h + " misses=" + m + " hit_rate=" + String.format(java.util.Locale.ROOT, "%.1f%%", rate)
-                + " prepared=" + BUILT.get() + " cached=" + size + "/" + CACHE_CAP
+        return "terrain_assist hits=" + h + " misses=" + m
+                + " hit_rate=" + String.format(java.util.Locale.ROOT, "%.1f%%", rate)
+                + " prepared=" + BUILT.get() + " cached=" + CACHE.size() + "/" + CACHE_CAP
                 + " batches=" + BATCHES.get() + " last_batch=" + LAST_BATCH.get()
                 + " queued=" + REQUESTED.size() + "/" + QUEUE_CAP
                 + " dropped=" + DROPPED.get() + " failed=" + FAILED.get()
@@ -166,7 +186,7 @@ public final class NpuTerrainAssist {
     }
 
     public static void clear() {
-        synchronized (CACHE) { CACHE.clear(); }
+        CACHE.clear();
         REQUESTED.clear();
     }
 }
