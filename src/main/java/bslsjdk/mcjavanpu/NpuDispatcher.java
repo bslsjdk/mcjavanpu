@@ -69,6 +69,11 @@ public final class NpuDispatcher {
      * padded A rows produce zero output, padded k columns multiply against nothing.
      */
     public static NpuRuntime.MatMulResult submit(byte[] a, byte[] b, int mActual, int kActual, int nActual) {
+        // Adaptive backoff. Cheap and allocation-free, so it is safe to sit in
+        // front of every call. When the guard has tripped, callers fall back to
+        // the vanilla path instead of paying for a slow or absent service.
+        if (!NpuGuard.allow()) return err("GUARD_DEGRADED " + NpuGuard.reason());
+
         if (a == null || b == null) return err("NULL_BUFFER");
         if (a.length < mActual * kActual) return err("A_TOO_SMALL expected=" + (mActual * kActual) + " got=" + a.length);
         if (b.length < kActual * nActual) return err("B_TOO_SMALL expected=" + (kActual * nActual) + " got=" + b.length);
@@ -83,8 +88,10 @@ public final class NpuDispatcher {
         }
         int m = sh[0], k = sh[1], n = sh[2];
 
+        final long t0 = System.nanoTime();
+
         if (m == mActual && k == kActual && n == nActual) {
-            return NpuRuntime.submitMatMulInt8(a, b, mActual, kActual, nActual);
+            return timed(NpuRuntime.submitMatMulInt8(a, b, mActual, kActual, nActual), t0);
         }
 
         byte[] A = new byte[m * k];
@@ -94,12 +101,12 @@ public final class NpuDispatcher {
         for (int p = 0; p < kActual; p++) System.arraycopy(b, p * nActual, B, p * n, nActual);
 
         NpuRuntime.MatMulResult r = NpuRuntime.submitMatMulInt8(A, B, m, k, n);
-        if (!r.ok()) return r;
+        if (!r.ok()) { reportFail(t0, r.error()); return r; }
 
         byte[] c = new byte[mActual * nActual];
         for (int i = 0; i < mActual; i++) System.arraycopy(r.c(), i * n, c, i * nActual, nActual);
 
-        return new NpuRuntime.MatMulResult(r.scaleC(), c, r.us(), null);
+        return timed(new NpuRuntime.MatMulResult(r.scaleC(), c, r.us(), null), t0);
     }
 
     /**
@@ -125,6 +132,18 @@ public final class NpuDispatcher {
             us += rr.us();
         }
         return new NpuRuntime.MatMulResult(scaleC, c, us, null);
+    }
+
+    /** Feed the guard the real wall time, so it can back off on its own. */
+    private static NpuRuntime.MatMulResult timed(NpuRuntime.MatMulResult r, long t0Nanos) {
+        long us = (System.nanoTime() - t0Nanos) / 1000L;
+        if (r.ok()) NpuGuard.recordUs(us);
+        else NpuGuard.recordFailure(String.valueOf(r.error()));
+        return r;
+    }
+
+    private static void reportFail(long t0Nanos, String error) {
+        NpuGuard.recordFailure(String.valueOf(error));
     }
 
     private static NpuRuntime.MatMulResult err(String e) { return new NpuRuntime.MatMulResult(0f, null, 0L, e); }
