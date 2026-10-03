@@ -130,9 +130,11 @@ public final class NpuServiceClient {
                 String line = readLineUtf8(in);
                 if (line == null) throw new EOFException("service closed connection");
                 clearCooldown();
+                healthy = true;
                 return line;
             } catch (Throwable t) {
                 close();
+                healthy = false;
                 String m = t.getMessage();
                 lastError = t.getClass().getSimpleName() + (m == null ? "" : "(" + m + ")");
                 if (t instanceof java.net.SocketTimeoutException) {
@@ -173,10 +175,12 @@ public final class NpuServiceClient {
                 byte[] c = new byte[cbytes];
                 readFully(in, c, cbytes);
                 clearCooldown();
+                healthy = true;
                 return new MatMulResult(scaleC, c, us, null);
             } catch (Throwable t) {
                 close();
                 String msg = t.getMessage();
+                healthy = false;
                 lastError = t.getClass().getSimpleName() + (msg == null ? "" : "(" + msg + ")");
                 if (t instanceof java.net.SocketTimeoutException) {
                     enterCooldown(lastError);
@@ -190,7 +194,19 @@ public final class NpuServiceClient {
 
     public static synchronized void closeAll() { close(); }
 
-    /** Short probe: never parks a game thread on a busy service. */
+    /**
+     * Cached health, updated only when a real request succeeds or fails.
+     *
+     * Game threads must never call isAvailable(): that opens a socket, sends PING and waits for
+     * a reply, which on the chunk-generation path meant a network round trip per chunk - the
+     * single biggest reason assist mode was slower than vanilla. Callers on the hot path read
+     * this flag instead; it is refreshed by whoever actually talks to the service.
+     */
+    private static volatile boolean healthy;
+
+    public static boolean healthy() { return healthy && !cooling(); }
+
+    /** Short probe: safe off the hot path only. Refreshes the cached flag. */
     public static boolean isAvailable() {
         if (cooling()) return false;
         try {
