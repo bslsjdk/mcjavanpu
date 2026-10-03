@@ -76,6 +76,11 @@ public final class NpuPreload {
         if ("vanilla".equalsIgnoreCase(cfg.lightMode)
                 && "vanilla".equalsIgnoreCase(cfg.chunkMode)) return;
 
+        // Preload exists to fill the terrain cache. If the gate will refuse every
+        // write, filling it is pure cost - skip the whole sweep.
+        if (!"vanilla".equalsIgnoreCase(cfg.chunkMode)
+                && !NpuTerrainGate.worthComputing()) return;
+
         if (++tickCounter < intervalTicks) return;
         tickCounter = 0;
 
