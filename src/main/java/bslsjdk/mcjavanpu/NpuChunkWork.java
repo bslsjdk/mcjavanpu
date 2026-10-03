@@ -277,6 +277,7 @@ public final class NpuChunkWork {
         NpuLightAccel.Result r = NpuLightAccel.propagateReal(a, SUB_COUNT);
         if (!r.ok || r.out == null) return false;
 
+        int raised = 0;
         try {
             for (int b = 0; b < SUB_COUNT; b++) {
                 int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
@@ -286,7 +287,10 @@ public final class NpuChunkWork {
                             int cell = (y * 8 + z) * 8 + x;
                             int nv = r.light(b, cell);
                             int cur = dataLayer.get(ox + x, oy + y, oz + z);
-                            if (nv > cur) dataLayer.set(ox + x, oy + y, oz + z, nv > 15 ? 15 : nv);
+                            if (nv > cur) {
+                                dataLayer.set(ox + x, oy + y, oz + z, nv > 15 ? 15 : nv);
+                                raised++;
+                            }
                         }
                     }
                 }
@@ -295,7 +299,11 @@ public final class NpuChunkWork {
         } catch (Throwable t) {
             return false;
         }
-        return true;
+        // The honest signal: if a whole section comes back with nothing changed the
+        // path is costing device time for no effect, and the counter in
+        // NpuLightAccel is what eventually stops it.
+        NpuLightAccel.noteWritten(raised);
+        return raised > 0;
     }
 
 }
