@@ -39,6 +39,7 @@ public final class NpuRenderAssist {
     private static final AtomicLong LAST_NPU_US = new AtomicLong();
     private static volatile long lastFrameUs;
     private static volatile String lastError = "";
+    private static volatile float lastScaleC;
 
     private NpuRenderAssist() {}
 
@@ -64,8 +65,7 @@ public final class NpuRenderAssist {
 
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return null;
-        if (NpuStats.LIGHT == null) return null;   // stats package present?
-        if (!NpuStats.CHUNK.enabled) return null;  // reuse the chunk switch as the render switch
+        if (!NpuStats.CHUNK.enabled) return null;   // the chunk switch doubles as the render switch
         if (lastFrameUs > SLOW_FRAME_US) return null;
         if (!NpuServiceClient.isAvailable()) return null;
 
@@ -83,7 +83,23 @@ public final class NpuRenderAssist {
                     maxAbs = Math.max(maxAbs, Math.abs(boxes[b + 3 + a]));
                 }
             }
-            float qs = 127f / maxAbs;
+            // Quantisation, and why the constants are what they are.
+            //
+            // The service returns int8, so the entire dynamic range of the product must fit in
+            // 127 levels. A 4-term dot product can reach 4 * maxA * maxB, so scaling both sides
+            // by s/max caps the worst case at 4*s^2, which puts s at about 5. Both sides are
+            // therefore normalised by their own maximum and then scaled by SHIFT.
+            //
+            // The resulting resolution is (maxA * maxB) / SHIFT^2 world units - a few units for a
+            // real view matrix. That is acceptable for visibility, which only needs "roughly where
+            // is this box and is it inside", and it is stated rather than hidden because the same
+            // trick would NOT be acceptable for the density field.
+            final float SHIFT = 5f;
+            float sa = SHIFT / maxAbs;
+
+            float maxB = 1e-6f;
+            for (int i = 0; i < 16; i++) maxB = Math.max(maxB, Math.abs(mvp[i]));
+            float sb = SHIFT / maxB;
 
             byte[] a = new byte[m * 4];
             for (int i = 0; i < n; i++) {
@@ -95,30 +111,26 @@ public final class NpuRenderAssist {
                     float y = C[c][1] == 0 ? y0 : y1;
                     float z = C[c][2] == 0 ? z0 : z1;
                     int base = (i * CORNERS + c) * 4;
-                    a[base]     = (byte) clamp8(Math.round(x * qs));
-                    a[base + 1] = (byte) clamp8(Math.round(y * qs));
-                    a[base + 2] = (byte) clamp8(Math.round(z * qs));
-                    a[base + 3] = (byte) clamp8(Math.round(qs));
+                    a[base]     = (byte) clamp8(Math.round(x * sa));
+                    a[base + 1] = (byte) clamp8(Math.round(y * sa));
+                    a[base + 2] = (byte) clamp8(Math.round(z * sa));
+                    a[base + 3] = (byte) clamp8(Math.round(sa));
                 }
             }
 
-            // Same normalisation on the matrix, so the scales cancel in the product.
             byte[] bmat = new byte[16];
-            for (int i = 0; i < 16; i++) {
-                bmat[i] = (byte) clamp8(Math.round(mvp[i] / qs * qs));   // keep matrix as-is, scaled by qs/q s = 1
-            }
-            // The matrix must be quantised with the same factor the service applies, so fold it in:
-            for (int i = 0; i < 16; i++) {
-                bmat[i] = (byte) clamp8(Math.round(mvp[i] * 127f));
-            }
+            for (int i = 0; i < 16; i++) bmat[i] = (byte) clamp8(Math.round(mvp[i] * sb));
 
             long t0 = System.nanoTime();
             NpuRuntime.MatMulResult r = NpuDispatcher.submit(a, bmat, m, 4, 4);
             long us = (System.nanoTime() - t0) / 1000;
             if (!r.ok() || r.c() == null) { FALLBACKS.incrementAndGet(); return null; }
 
-            float scale = r.scaleC();
-            if (scale == 0f) scale = (1f / qs) * (1f / 127f);
+            // Both quantisation factors are known exactly, so the inverse is exact too. scaleC is
+            // recorded for diagnostics but not depended on, because its convention belongs to the
+            // service and a mismatch would silently rescale an entire frame.
+            float scale = 1f / (sa * sb);
+            lastScaleC = r.scaleC();
             byte[] c = r.c();
             float[] out = new float[m * 4];
             for (int i = 0; i < m; i++) {
@@ -147,6 +159,7 @@ public final class NpuRenderAssist {
                 + " rate=" + String.format(Locale.ROOT, "%.1f%%", rate)
                 + " boxes=" + BOXES_DONE.get() + " last_npu_us=" + LAST_NPU_US.get()
                 + " fallbacks=" + FALLBACKS.get() + " last_frame_us=" + lastFrameUs
+                + " scaleC=" + lastScaleC
                 + (lastError.isEmpty() ? "" : " lastError=" + lastError);
     }
 }
