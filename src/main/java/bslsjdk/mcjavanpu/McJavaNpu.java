@@ -324,6 +324,72 @@ public final class McJavaNpu implements ModInitializer {
         return 0;
     }
 
+    /**
+     * Fold (2r+1)^2 whole chunk sections into ONE NPU batch.
+     *
+     * Each section is 16x16x16 = eight 8x8x8 fields, so a radius of 1 gives
+     * 9 sections x 8 = 72 rows in a single call. This is the batched alternative
+     * to multi-threaded chunk work: the device cost barely changes with row count.
+     */
+    private static int runLightFold(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int radius) {
+        String info;
+        try {
+            Object level = context.getSource().getLevel();
+            Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
+            Object blockLayer = null;
+            for (Object o : ll.getEnumConstants()) if ("BLOCK".equals(String.valueOf(o))) blockLayer = o;
+            Object le = level.getClass().getMethod("getLightEngine").invoke(level);
+            Object listener = le.getClass().getMethod("getLayerListener", ll).invoke(le, blockLayer);
+            Object pos = context.getSource().getClass().getMethod("getPosition").invoke(context.getSource());
+            Class<?> pc = pos.getClass();
+            int bx = (int) Math.floor(((Number) pc.getField("x").get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) pc.getField("y").get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
+            Class<?> sp = Class.forName("net.minecraft.core.SectionPos");
+            java.lang.reflect.Method spOf = sp.getMethod("of", int.class, int.class, int.class);
+            int scx = bx >> 4, scy = by >> 4, scz = bz >> 4;
+
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            int rows = 0, sections = 0, nzTotal = 0;
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    Object section = spOf.invoke(null, scx + dx, scy, scz + dz);
+                    Object dl = listener.getClass().getMethod("getDataLayerData", sp).invoke(listener, section);
+                    if (dl instanceof java.util.Optional) dl = ((java.util.Optional<?>) dl).orElse(null);
+                    if (dl == null) continue;
+                    java.lang.reflect.Method g = dl.getClass().getMethod("get", int.class, int.class, int.class);
+                    sections++;
+                    for (int sy = 0; sy < 2; sy++)
+                        for (int sz = 0; sz < 2; sz++)
+                            for (int sx = 0; sx < 2; sx++) {
+                                byte[] row = new byte[NpuLightAccel.CELLS];
+                                for (int y = 0; y < 8; y++)
+                                    for (int z = 0; z < 8; z++)
+                                        for (int x = 0; x < 8; x++) {
+                                            int v = ((Number) g.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z)).intValue();
+                                            row[(y * 8 + z) * 8 + x] = (byte) (v & 0xFF);
+                                            if (v > 0) nzTotal++;
+                                        }
+                                buf.write(row, 0, row.length);
+                                rows++;
+                            }
+                }
+            }
+            if (rows == 0) {
+                info = "no DataLayer in range (sections not loaded)";
+            } else {
+                NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
+                info = "folded sections=" + sections + " rows=" + rows + " nonzero=" + nzTotal + " | " + r.summary();
+            }
+        } catch (Throwable t) {
+            info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
+        }
+        final String line = "[NPU] lightfold " + info;
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        NpuLog.log(line);
+        return 0;
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -427,6 +493,11 @@ public final class McJavaNpu implements ModInitializer {
                 .then(Commands.literal("lightapply")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> runLightApply(context)))
+                .then(Commands.literal("lightfold")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runLightFold(context, 1))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
+                                .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
