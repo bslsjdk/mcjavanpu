@@ -290,6 +290,18 @@ public final class McJavaNpu implements ModInitializer {
     private static int runLightApply(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
                                      int radius, boolean apply) {
         String info;
+        // Three-way mode decides what actually happens:
+        //   vanilla - nothing, the game keeps its own path (skip unless explicitly forced)
+        //   npu     - the result is written back, replacing the game's serial propagation
+        //   assist  - the NPU computes and reports, the game still finishes the job
+        final String mode = NpuConfig.get().lightMode;
+        final boolean writeBack = apply || "npu".equalsIgnoreCase(mode);
+        if ("vanilla".equalsIgnoreCase(mode) && !apply) {
+            final String line = "[NPU] lightapply mode=vanilla (skipped, the game does it itself)";
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            NpuLog.log(line);
+            return 0;
+        }
         try {
             Object level = context.getSource().getLevel();
             Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
@@ -362,8 +374,8 @@ public final class McJavaNpu implements ModInitializer {
                 NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
                 if (!r.ok) {
                     info = "FAIL " + r.error;
-                } else if (!apply) {
-                    info = "read-only sections=" + sections + " rows=" + rows + " nonzero=" + nz + " | " + r.summary();
+                } else if (!writeBack) {
+                    info = "mode=" + mode + " (assist, not written) sections=" + sections + " rows=" + rows + " nonzero=" + nz + " | " + r.summary();
                 } else {
                     int written = 0, row = 0;
                     for (Object dl : layers) {
@@ -383,7 +395,7 @@ public final class McJavaNpu implements ModInitializer {
                                     row++;
                                 }
                     }
-                    info = "APPLIED sections=" + sections + " rows=" + rows + " written=" + written + " | " + r.summary();
+                    info = "mode=" + mode + " APPLIED sections=" + sections + " rows=" + rows + " written=" + written + " | " + r.summary();
                 }
             }
         } catch (Throwable t) {
