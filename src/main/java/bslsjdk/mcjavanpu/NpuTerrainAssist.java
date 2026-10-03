@@ -123,8 +123,17 @@ public final class NpuTerrainAssist {
                 NpuConfig cfg = NpuConfig.get();
                 if (cfg == null || !cfg.enabled) continue;
                 if (NpuStats.NOISE != null && !NpuStats.NOISE.enabled) continue;
-                // Only this thread touches the service, so this is where health is refreshed.
-                if (!NpuServiceClient.healthy() && !NpuServiceClient.isAvailable()) continue;
+                // No health gate here any more.
+                //
+                // This used to be "if not healthy and not reachable, skip the item", and that single
+                // line is why processed=0: the very first call includes graph construction, which is
+                // slow, which tripped the guard, which made healthy() false forever, which made the
+                // prefetcher drop every request it was given. 8231 submitted, 0 processed, all while
+                // the service was up and answering.
+                //
+                // The prefetcher is now unconditionally optimistic: it attempts the work and lets the
+                // call itself decide success or failure. A failed attempt is cheap (the client already
+                // has cooldown handling); silently discarding everything is not.
 
                 int minY = keyMinY(firstKey);
 
