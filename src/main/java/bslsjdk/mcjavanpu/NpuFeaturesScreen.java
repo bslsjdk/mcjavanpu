@@ -78,7 +78,9 @@ public final class NpuFeaturesScreen extends Screen {
         // Guard state is the one thing worth showing live: if it has tripped, the
         // NPU is not paying for itself right now and every feature is on CPU.
         addRenderableWidget(Button.builder(
-                Component.literal("守卫状态: " + (NpuGuard.isDegraded() ? "已降级" : "正常")),
+                Component.literal("守卫状态: " + (NpuGuard.isDegraded() ? "已降级" : "正常")
+                        + (NpuLightAccel.zeroWrites() > 0
+                                ? "  空写入 " + NpuLightAccel.zeroWrites() + "/" + 6 : "")),
                 b -> { NpuGuard.reset(); this.rebuildWidgets(); this.status = "guard reset"; })
                 .bounds(cx - 160, y, 230, 20).build());
         y += 24;
@@ -88,7 +90,9 @@ public final class NpuFeaturesScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("返回"), b -> onClose())
                 .bounds(cx + 60, y + 8, 100, 20).build());
         this.status = NpuStats.report().replace("\\n", "  |  ")
-                + "  ||  " + NpuGuard.summary();
+                + "  ||  " + NpuGuard.summary()
+                + (NpuLightAccel.isNoEffect()
+                        ? "  ||  light NO_EFFECT (0 writes, path disabled)" : "");
     }
 
     private static String label(String key) {
