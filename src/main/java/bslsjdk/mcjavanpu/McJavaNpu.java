@@ -280,8 +280,15 @@ public final class McJavaNpu implements ModInitializer {
         return r.ok ? 1 : 0;
     }
 
-    /** Talks to the REAL light storage (LightEngine -> listener -> DataLayer). */
-    private static int runLightApply(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context) {
+    /**
+     * Read (2r+1)^2 whole chunk sections -> fold into ONE NPU batch -> write back.
+     *
+     * apply=false : read-only probe, nothing in the world changes.
+     * apply=true  : the propagated values are pushed through DataLayer.set, i.e.
+     *               this replaces the serial BFS the light engine was about to run.
+     */
+    private static int runLightApply(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context,
+                                     int radius, boolean apply) {
         String info;
         try {
             Object level = context.getSource().getLevel();
@@ -296,24 +303,66 @@ public final class McJavaNpu implements ModInitializer {
             int by = (int) Math.floor(((Number) pc.getField("y").get(pos)).doubleValue());
             int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
             Class<?> sp = Class.forName("net.minecraft.core.SectionPos");
-            Object section = sp.getMethod("of", int.class, int.class, int.class).invoke(null, bx >> 4, by >> 4, bz >> 4);
-            Object dl = listener.getClass().getMethod("getDataLayerData", sp).invoke(listener, section);
-            if (dl instanceof java.util.Optional) dl = ((java.util.Optional<?>) dl).orElse(null);
-            if (dl == null) {
-                info = "DataLayer=null (section not loaded / empty)";
+            java.lang.reflect.Method spOf = sp.getMethod("of", int.class, int.class, int.class);
+            int scx = bx >> 4, scy = by >> 4, scz = bz >> 4;
+
+            java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            java.util.List<Object> layers = new java.util.ArrayList<>();
+            int rows = 0, sections = 0, nz = 0;
+            for (int dx = -radius; dx <= radius; dx++) {
+                for (int dz = -radius; dz <= radius; dz++) {
+                    Object section = spOf.invoke(null, scx + dx, scy, scz + dz);
+                    Object dl = listener.getClass().getMethod("getDataLayerData", sp).invoke(listener, section);
+                    if (dl instanceof java.util.Optional) dl = ((java.util.Optional<?>) dl).orElse(null);
+                    if (dl == null) continue;
+                    sections++;
+                    layers.add(dl);
+                    java.lang.reflect.Method g = dl.getClass().getMethod("get", int.class, int.class, int.class);
+                    for (int sy = 0; sy < 2; sy++)
+                        for (int sz = 0; sz < 2; sz++)
+                            for (int sx = 0; sx < 2; sx++) {
+                                byte[] row = new byte[NpuLightAccel.CELLS];
+                                for (int y = 0; y < 8; y++)
+                                    for (int z = 0; z < 8; z++)
+                                        for (int x = 0; x < 8; x++) {
+                                            int v = ((Number) g.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z)).intValue();
+                                            row[(y * 8 + z) * 8 + x] = (byte) (v & 0xFF);
+                                            if (v > 0) nz++;
+                                        }
+                                buf.write(row, 0, row.length);
+                                rows++;
+                            }
+                }
+            }
+            if (rows == 0) {
+                info = "no DataLayer in range (sections not loaded)";
             } else {
-                java.lang.reflect.Method g = dl.getClass().getMethod("get", int.class, int.class, int.class);
-                byte[] cells = new byte[NpuLightAccel.CELLS];
-                int nz = 0;
-                for (int y = 0; y < 8; y++)
-                    for (int z = 0; z < 8; z++)
-                        for (int x = 0; x < 8; x++) {
-                            int v = ((Number) g.invoke(dl, x, y, z)).intValue();
-                            cells[(y * 8 + z) * 8 + x] = (byte) (v & 0xFF);
-                            if (v > 0) nz++;
-                        }
-                NpuLightAccel.Result r = NpuLightAccel.propagateReal(cells, 128);
-                info = "DataLayer=" + dl.getClass().getSimpleName() + " nonzero=" + nz + "/512 | " + r.summary();
+                NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
+                if (!r.ok) {
+                    info = "FAIL " + r.error;
+                } else if (!apply) {
+                    info = "read-only sections=" + sections + " rows=" + rows + " nonzero=" + nz + " | " + r.summary();
+                } else {
+                    int written = 0, row = 0;
+                    for (Object dl : layers) {
+                        java.lang.reflect.Method st = dl.getClass().getMethod("set", int.class, int.class, int.class, int.class);
+                        for (int sy = 0; sy < 2; sy++)
+                            for (int sz = 0; sz < 2; sz++)
+                                for (int sx = 0; sx < 2; sx++) {
+                                    for (int y = 0; y < 8; y++)
+                                        for (int z = 0; z < 8; z++)
+                                            for (int x = 0; x < 8; x++) {
+                                                int v = r.light(row, (y * 8 + z) * 8 + x);
+                                                if (v > 0) {
+                                                    st.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z, v);
+                                                    written++;
+                                                }
+                                            }
+                                    row++;
+                                }
+                    }
+                    info = "APPLIED sections=" + sections + " rows=" + rows + " written=" + written + " | " + r.summary();
+                }
             }
         } catch (Throwable t) {
             info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
