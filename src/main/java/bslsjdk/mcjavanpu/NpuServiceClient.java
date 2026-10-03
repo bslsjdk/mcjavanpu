@@ -224,7 +224,33 @@ public final class NpuServiceClient {
         return "in_lock avg_us=" + avg + " max_us=" + IN_LOCK_MAX_US.get() + " n=" + n;
     }
 
+    /**
+     * Serialises access to the socket, and measures how long that serialisation costs.
+     *
+     * This was a plain static synchronized block. It has to serialise - one socket, one outstanding
+     * request - but the cost of that must be visible, because it is not free: the difference between
+     * in_lock and send+wait+recv measured 8.5 ms in the field, which is time spent waiting, not
+     * computing. A fair lock is used so a prefetch thread cannot starve the game thread.
+     */
+    private static final java.util.concurrent.locks.ReentrantLock SUBMIT_LOCK =
+            new java.util.concurrent.locks.ReentrantLock(true);
+    private static final java.util.concurrent.atomic.AtomicLong LOCK_WAIT_US =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong LOCK_WAIT_MAX_US =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    public static String contentionSummary() {
+        long n = Math.max(1, IN_LOCK_N.get());
+        return "lock_wait_avg_us=" + (LOCK_WAIT_US.get() / n)
+                + " lock_wait_max_us=" + LOCK_WAIT_MAX_US.get();
+    }
+
     public static MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
+        long tWait0 = System.nanoTime();
+        SUBMIT_LOCK.lock();
+        long waitUs = (System.nanoTime() - tWait0) / 1000;
+        LOCK_WAIT_US.addAndGet(waitUs);
+        if (waitUs > LOCK_WAIT_MAX_US.get()) LOCK_WAIT_MAX_US.set(waitUs);
         long t = System.nanoTime();
         try {
             return submitBinMatMul8Locked(A, B, m, k, n);
@@ -233,10 +259,11 @@ public final class NpuServiceClient {
             IN_LOCK_US.addAndGet(us);
             IN_LOCK_N.incrementAndGet();
             if (us > IN_LOCK_MAX_US.get()) IN_LOCK_MAX_US.set(us);
+            SUBMIT_LOCK.unlock();
         }
     }
 
-    private static synchronized MatMulResult submitBinMatMul8Locked(byte[] A, byte[] B, int m, int k, int n) {
+    private static MatMulResult submitBinMatMul8Locked(byte[] A, byte[] B, int m, int k, int n) {
         if (A == null || B == null || m <= 0 || k <= 0 || n <= 0) return new MatMulResult(0, null, 0, "BAD_ARGS");
         if ((long) A.length != (long) m * k || (long) B.length != (long) k * n) return new MatMulResult(0, null, 0, "BAD_SIZE");
         if ((long) A.length + B.length > MAX_PAYLOAD_BYTES) {
