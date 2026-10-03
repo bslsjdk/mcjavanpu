@@ -122,6 +122,10 @@ public abstract class DensitySamplerMixin {
 
         // Bounded and non-blocking: it either lands in the queue or is dropped. Either way this
         // call returns immediately.
-        NpuTerrainAssist.request(cx, cz, sx, sy, sz, oy);
+        // 9x9 work set, not just this chunk. One request plans 81 chunks and the background batcher
+        // executes them as many 4-chunk submissions, producing results continuously while the player
+        // is still walking towards them. Queueing only the immediate neighbours left the prefetcher
+        // with nothing to do between two submissions.
+        NpuTerrainAssist.requestWorkSet(cx, cz, sx, sy, sz, oy);
     }
 }
