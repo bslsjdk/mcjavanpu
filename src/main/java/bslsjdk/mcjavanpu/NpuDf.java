@@ -146,5 +146,115 @@ public abstract class NpuDf {
     /** Collects noise leaves so a batched evaluator can find them. */
     public void collectNoise(Map<String, NpuNoise.NormalNoise> out, String path) {}
 
+
+    // ---------------------------------------------------------------- spline
+
+    /**
+     * Cubic Hermite spline, the shape vanilla uses for factor / offset / jaggedness.
+     *
+     * controlX / controlY / controlD hold the knot locations, values and derivatives. Outside
+     * the knot range the spline is flat. Inside, the segment is the standard Hermite form, which
+     * is why the third-order term appears in the interpolation below.
+     */
+    public static final class Spline {
+        private final double[] x, y, d;
+        private final double[] a, b;   // precomputed cubic coefficients
+
+        public Spline(double[] xs, double[] ys, double[] ds) {
+            this.x = xs; this.y = ys; this.d = ds;
+            int n = xs.length - 1;
+            this.a = new double[n];
+            this.b = new double[n];
+            for (int i = 0; i < n; i++) {
+                double dx = xs[i + 1] - xs[i];
+                double dy = ys[i + 1] - ys[i];
+                a[i] = d[i] * dx - dy;
+                b[i] = -d[i + 1] * dx + dy;
+            }
+        }
+
+        public double apply(double v) {
+            int last = x.length - 1;
+            if (v <= x[0]) return y[0];
+            if (v >= x[last]) return y[last];
+            int i = 0;
+            while (i < last - 1 && v >= x[i + 1]) i++;
+            double dx = x[i + 1] - x[i];
+            double t = (v - x[i]) / dx;
+            double base = y[i] + t * (y[i + 1] - y[i]);
+            double cubic = t * (1 - t) * (a[i] * (1 - t) + b[i] * t);
+            return base + cubic;
+        }
+    }
+
+    /** A spline node driven by another density function (usually continents / erosion / ridges). */
+    public static NpuDf spline(final NpuDf coordinate, final Spline spline) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                return spline.apply(coordinate.get(x, y, z));
+            }
+            @Override public void reset() { coordinate.reset(); }
+            @Override public String toString() { return "spline"; }
+        };
+    }
+
+    // ------------------------------------------------------------ gradient
+
+    /** vanilla gradient node: a linear ramp along one axis, clamped outside the range. */
+    public static NpuDf gradientY(final double fromCoord, final double fromValue,
+                                  final double toCoord, final double toValue) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                double t = (y - fromCoord) / (toCoord - fromCoord);
+                if (t < 0) t = 0; else if (t > 1) t = 1;
+                return fromValue + t * (toValue - fromValue);
+            }
+            @Override public String toString() { return "gradientY"; }
+        };
+    }
+
+    /** vanilla lerp: mix two constant/child functions by a clamped alpha. */
+    public static NpuDf lerp(final NpuDf alpha, final NpuDf first, final NpuDf second) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                double t = alpha.get(x, y, z);
+                if (t < 0) t = 0; else if (t > 1) t = 1;
+                return first.get(x, y, z) + t * (second.get(x, y, z) - first.get(x, y, z));
+            }
+            @Override public void reset() { alpha.reset(); first.reset(); second.reset(); }
+            @Override public String toString() { return "lerp"; }
+        };
+    }
+
+    /** vanilla range_choice: pick a branch depending on whether the input falls in a window. */
+    public static NpuDf rangeChoice(final NpuDf input, final double minInclusive, final double maxExclusive,
+                                    final NpuDf inRange, final NpuDf outOfRange) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                double v = input.get(x, y, z);
+                return (v >= minInclusive && v < maxExclusive)
+                        ? inRange.get(x, y, z) : outOfRange.get(x, y, z);
+            }
+            @Override public void reset() { input.reset(); inRange.reset(); outOfRange.reset(); }
+            @Override public String toString() { return "rangeChoice"; }
+        };
+    }
+
+    /** vanillasqueeze: pulls values towards [-1, 1] so the written density stays sane. */
+    public static NpuDf squeeze(NpuDf in) {
+        return unary(in, v -> {
+            double c = v < -1 ? -1 : (v > 1 ? 1 : v);
+            return c / 2.0 - c * c * c / 24.0;
+        }, "squeeze");
+    }
+
+    /**
+     * Counts the noise leaves under this node, and sums the per-sample dot-product width.
+     * This is the number that tells us how much work a batched NPU path would carry.
+     */
+    public static final class LeafStats {
+        public int noiseLeaves;
+        public int totalOctaves;
+    }
     @Override public String toString() { return "df"; }
 }
