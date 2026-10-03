@@ -177,7 +177,6 @@ public final class NpuTerrainAssist {
                             + "), falling back to per-chunk vanilla generation");
                     continue;
                 }
-                BUILT.addAndGet(n);
                 if (vols.length != n) { FAILED.incrementAndGet(); lastError = "short batch"; continue; }
 
                 for (int i = 0; i < n; i++) {
