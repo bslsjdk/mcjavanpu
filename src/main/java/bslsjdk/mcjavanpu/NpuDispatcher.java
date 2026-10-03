@@ -25,8 +25,8 @@ public final class NpuDispatcher {
     /** Coarse size ladder. MUST mirror the native side exactly. */
     public static final int[] MM_BUCKETS = {32, 64, 128, 256, 512, 1024, 2048, 4096, 8192, 16384, 32768, 65536};
 
-    /** Hard floor: below this the HTP refuses to execute. */
-    public static final int M_MIN = 128;
+    /** Smallest measured HTP bucket. 16 is not on the safe whitelist; 32 is. */
+    public static final int M_MIN = 32;
 
     /** Native bucketize() returns 0 above this, which fails as ERR BUF_TOO_LARGE. */
     public static final int MM_MAX = 65536;
