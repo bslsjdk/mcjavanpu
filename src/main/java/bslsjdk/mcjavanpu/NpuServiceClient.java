@@ -264,7 +264,12 @@ public final class NpuServiceClient {
         if (waitUs > LOCK_WAIT_MAX_US.get()) LOCK_WAIT_MAX_US.set(waitUs);
         long t = System.nanoTime();
         try {
-            return submitBinMatMul8Locked(A, B, m, k, n, total0);
+            MatMulResult r = submitBinMatMul8Locked(A, B, m, k, n, total0);
+            // Counted here, at the transport, not in the scheduler. A counter in the
+            // scheduler would only prove that chunks were put in a list; this proves
+            // a request actually left for the NPU.
+            NpuBatchMetrics.recordActualSubmit(m + "x" + k + "x" + n, r == null ? 0 : r.totalUs);
+            return r;
         } finally {
             long us = (System.nanoTime() - t) / 1000;
             IN_LOCK_US.addAndGet(us);
