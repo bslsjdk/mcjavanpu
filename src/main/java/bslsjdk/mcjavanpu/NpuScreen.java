@@ -19,7 +19,7 @@ public final class NpuScreen extends Screen {
     @Override
     protected void init() {
         int cx = this.width / 2;
-        int y = this.height / 2 - 60;
+        int y = this.height / 2 - 110;
 
         addRenderableWidget(Button.builder(Component.literal("刷新状态"), b -> refresh())
                 .bounds(cx - 100, y, 200, 20).build());
@@ -39,6 +39,26 @@ public final class NpuScreen extends Screen {
         addRenderableWidget(Button.builder(Component.literal("关闭"), b -> onClose())
                 .bounds(cx + 5, y + 78, 100, 20).build());
 
+        // Runtime switches. Each one persists to config/mcjavanpu.properties.
+        addRenderableWidget(Button.builder(Component.literal("总开关：" + onOff(cfg().enabled)), b -> toggleConfig("enabled"))
+                .bounds(cx - 100, y + 104, 200, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal("启动自动预热：" + onOff(cfg().autoWarmup)), b -> toggleConfig("autoWarmup"))
+                .bounds(cx - 100, y + 130, 200, 20).build());
+
+        addRenderableWidget(Button.builder(Component.literal("详细日志：" + onOff(cfg().debugLog)), b -> toggleConfig("debugLog"))
+                .bounds(cx - 100, y + 156, 200, 20).build());
+
+        refresh();
+    }
+
+    private static NpuConfig cfg() { return NpuConfig.get(); }
+    private static String onOff(boolean b) { return b ? "开" : "关"; }
+
+    private void toggleConfig(String key) {
+        cfg().toggle(key);
+        NpuLog.log("screen toggle " + key + " -> " + cfg().describe());
+        this.rebuildWidgets();
         refresh();
     }
 
