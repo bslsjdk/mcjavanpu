@@ -761,6 +761,26 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("batch")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuBatchManager.report() + "\n" + NpuBatchManager.shapeHint();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log(l);
+                            return 1;
+                        })
+                        .then(Commands.literal("reset").executes(context -> {
+                            NpuBatchManager.reset();
+                            context.getSource().sendSuccess(() -> Component.literal("[NPU] batch counters cleared"), false);
+                            return 1;
+                        }))
+                        .then(Commands.argument("lattice", IntegerArgumentType.integer(1, 32))
+                                .executes(context -> {
+                                    NpuBatchManager.setLattice(IntegerArgumentType.getInteger(context, "lattice"));
+                                    final String l = "[NPU] " + NpuBatchManager.report();
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("profile")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> runProfile(context, 10))
