@@ -8,6 +8,9 @@ import net.minecraft.client.KeyMapping;
 
 public final class McJavaNpuClient implements ClientModInitializer {
     private static KeyMapping openScreenKey;
+    /** Re-check the external service every 5 seconds (20 ticks/s) while offline. */
+    private static final int RECONNECT_INTERVAL_TICKS = 100;
+    private static int ticks;
 
     @Override
     public void onInitializeClient() {
@@ -29,6 +32,14 @@ public final class McJavaNpuClient implements ClientModInitializer {
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             while (openScreenKey.consumeClick()) {
                 client.gui.setScreen(new NpuScreen());
+            }
+            // The MCNPU service can come up after Minecraft started (or be restarted by
+            // the OS). Never stay permanently offline: retry in the background.
+            if (++ticks >= RECONNECT_INTERVAL_TICKS) {
+                ticks = 0;
+                if (!NpuRuntime.isInitialized() || !NpuRuntime.isAvailable()) {
+                    Thread.ofVirtual().name("mcjavanpu-reconnect").start(NpuRuntime::init);
+                }
             }
         });
     }
