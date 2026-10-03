@@ -30,8 +30,22 @@ public final class NpuTerrainLattice {
     /** Tensor element budget reported by the service (CAPABILITIES max_elements). */
     public static final int MAX_ELEMENTS = 16384;
 
-    public static final int CELL_XZ = 4;
-    public static final int CELL_Y = 8;
+    /**
+     * Lattice spacing.
+     *
+     * Vanilla uses 4/8, which for one chunk is 5 x 49 x 5 = 1225 lattice points. At K=16 that is
+     * 19600 elements, which does NOT fit the service budget of 16384 and therefore needs two
+     * submissions - and a submission that cannot be batched with anything else pays the fixed
+     * cost every time.
+     *
+     * Widening to 8/16 gives 3 x 25 x 3 = 225 points, i.e. 3600 elements per chunk, so four
+     * chunks fit in a single submission. That is the trade this file makes: somewhat softer
+     * terrain detail in exchange for amortising the per-call cost over four chunks instead of
+     * paying it per chunk. For an assist path that is the right way round - detail is a quality
+     * knob, throughput is the whole point.
+     */
+    public static final int CELL_XZ = 8;
+    public static final int CELL_Y = 16;
     /**
      * Features per lattice point.
      *
@@ -103,6 +117,20 @@ public final class NpuTerrainLattice {
         b[5] = 0.9f;
         b[6] = 0.9f;
         return b;
+    }
+
+    /**
+     * How many chunks of this shape can share one submission under the element budget.
+     * Used by the batch builder; at least 1 so a single chunk can always be served.
+     */
+    public static int maxChunksPerSubmit(int sx, int sy, int sz) {
+        int perChunk = latticePoints(sx, sy, sz) * K;
+        return Math.max(1, MAX_ELEMENTS / perChunk);
+    }
+
+    public static int latticePoints(int sx, int sy, int sz) {
+        int lx = sx / CELL_XZ + 1, lz = sz / CELL_XZ + 1, ly = sy / CELL_Y + 1;
+        return lx * ly * lz;
     }
 
     /**
