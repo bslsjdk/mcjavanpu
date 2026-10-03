@@ -492,6 +492,7 @@ public final class McJavaNpu implements ModInitializer {
             int scx = bx >> 4, scy = by >> 4, scz = bz >> 4;
 
             java.io.ByteArrayOutputStream buf = new java.io.ByteArrayOutputStream();
+            java.util.List<Object> layers = new java.util.ArrayList<>();
             int rows = 0, sections = 0, nzTotal = 0;
             for (int dx = -radius; dx <= radius; dx++) {
                 for (int dz = -radius; dz <= radius; dz++) {
@@ -501,6 +502,7 @@ public final class McJavaNpu implements ModInitializer {
                     if (dl == null) continue;
                     java.lang.reflect.Method g = dl.getClass().getMethod("get", int.class, int.class, int.class);
                     sections++;
+                    layers.add(dl);
                     for (int sy = 0; sy < 2; sy++)
                         for (int sz = 0; sz < 2; sz++)
                             for (int sx = 0; sx < 2; sx++) {
@@ -521,7 +523,33 @@ public final class McJavaNpu implements ModInitializer {
                 info = "no DataLayer in range (sections not loaded)";
             } else {
                 NpuLightAccel.Result r = NpuLightAccel.propagateBatch(buf.toByteArray(), rows);
-                info = "mode=" + cmode + " folded sections=" + sections + " rows=" + rows + " nonzero=" + nzTotal + " | " + r.summary();
+                if (!r.ok) {
+                    info = "FAIL " + r.error;
+                } else if (!"npu".equalsIgnoreCase(cmode)) {
+                    info = "mode=" + cmode + " folded sections=" + sections + " rows=" + rows
+                            + " nonzero=" + nzTotal + " | " + r.summary();
+                } else {
+                    int written = 0, row = 0;
+                    for (Object dl : layers) {
+                        java.lang.reflect.Method st = dl.getClass().getMethod("set", int.class, int.class, int.class, int.class);
+                        for (int sy = 0; sy < 2; sy++)
+                            for (int sz = 0; sz < 2; sz++)
+                                for (int sx = 0; sx < 2; sx++) {
+                                    for (int y = 0; y < 8; y++)
+                                        for (int z = 0; z < 8; z++)
+                                            for (int x = 0; x < 8; x++) {
+                                                int v = r.light(row, (y * 8 + z) * 8 + x);
+                                                if (v > 0) {
+                                                    st.invoke(dl, sx * 8 + x, sy * 8 + y, sz * 8 + z, v);
+                                                    written++;
+                                                }
+                                            }
+                                    row++;
+                                }
+                    }
+                    info = "mode=" + cmode + " FOLDED+APPLIED sections=" + sections + " rows=" + rows
+                            + " written=" + written + " | " + r.summary();
+                }
             }
         } catch (Throwable t) {
             info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
