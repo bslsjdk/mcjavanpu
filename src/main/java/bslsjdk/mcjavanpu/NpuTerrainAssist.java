@@ -190,6 +190,7 @@ public final class NpuTerrainAssist {
 
                 for (int i = 0; i < n; i++) {
                     CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
+            IN_FLIGHT.remove(keys.get(i));
                 }
                 if (CACHE.size() > CACHE_CAP * 2) CACHE.clear();
                 BUILT.addAndGet(n);
@@ -293,6 +294,60 @@ public final class NpuTerrainAssist {
      * queue capacity are dropped, which is the correct failure mode - the game keeps generating
      * terrain with vanilla, and the next chunk along will probably fit.
      */
+    /**
+     * Side of the square work set requested around the chunk the game just asked for.
+     *
+     * Nine, not two. The earlier version only ever queued the immediate neighbours of a single
+     * chunk, which is why the NPC always looked starved: by the time the player walks into the
+     * next chunk the prefetcher has had one submission's worth of time to produce it, and one
+     * submission is ~9 ms of service plus lock waiting. A 9x9 set is 81 chunks - enough that the
+     * queue stays full, the batcher always has four compatible chunks to submit together, and the
+     * result is produced well before the player arrives.
+     *
+     * It is still requested as one work set and executed as many small submissions, which is the
+     * only shape that fits the 16384 element budget. "Plan 81, execute in batches of 4".
+     */
+    public static final int WORK_SET_SIDE = 9;
+
+    /** Chunks currently queued or already produced, so a redraw does not queue duplicates. */
+    private static final java.util.Set<Long> IN_FLIGHT =
+            java.util.concurrent.ConcurrentHashMap.newKeySet();
+
+    /**
+     * Submit a whole work set centred on one chunk.
+     *
+     * Ordering matters more than it looks: the centre goes first, then rings outward, so the chunk
+     * the player is about to need is produced before the ones at the edge of the set. The walk-ahead
+     * is biased along the direction of travel when the caller knows it, otherwise the ring order
+     * still gives a usable near-first result.
+     */
+    public static void requestWorkSet(int cx, int cz, int sx, int sy, int sz, int minY) {
+        NpuConfig cfg = NpuConfig.get();
+        if (cfg == null || !cfg.enabled) return;
+        if (!workerStarted) ensureWorker();
+
+        int half = WORK_SET_SIDE / 2;
+        for (int ring = 0; ring <= half; ring++) {
+            for (int dz = -ring; dz <= ring; dz++) {
+                for (int dx = -ring; dx <= ring; dx++) {
+                    // Only the shell of this ring; the interior was queued by earlier iterations.
+                    if (ring > 0 && Math.abs(dx) != ring && Math.abs(dz) != ring) continue;
+                    offer(cx + dx, cz + dz, minY);
+                }
+            }
+        }
+    }
+
+    private static void offer(int cx, int cz, int minY) {
+        long k = key(cx, cz, minY);
+        if (CACHE.containsKey(k) || TAKEOVER_CACHE.containsKey(k)) return;
+        if (!IN_FLIGHT.add(k)) return;              // already queued by someone else
+        if (!REQUESTED.offer(k)) {
+            IN_FLIGHT.remove(k);
+            DROPPED.incrementAndGet();
+        }
+    }
+
     public static void request(int cx, int cz, int sx, int sy, int sz, int minY) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
