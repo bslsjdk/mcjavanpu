@@ -42,11 +42,16 @@ public final class McJavaNpu implements ModInitializer {
         }
 
         long t1 = System.nanoTime();
+        // The service quantises A and B with step 0.001, so a product of two int8
+        // values carries scaleA*scaleB = 1e-6. The reference must live in those
+        // same units -- accumulating the raw integers made every comparison look
+        // wrong by a factor of a million (~351629 across 256^3).
+        final float Q = 1.0e-6f;
         float[] ref = new float[m * w];
         for (int i = 0; i < m; i++) {
             for (int p = 0; p < k; p++) {
                 int av = A[i * k + p];
-                for (int j = 0; j < w; j++) ref[i * w + j] += av * B[p * w + j];
+                for (int j = 0; j < w; j++) ref[i * w + j] += av * B[p * w + j] * Q;
             }
         }
         long javaUs = (System.nanoTime() - t1) / 1000;
