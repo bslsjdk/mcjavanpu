@@ -177,8 +177,8 @@ public final class NpuTerrainAssist {
     public static float[] peek(int cx, int cz, int minY) {
         Prepared p = CACHE.get(key(cx, cz, minY));
         if (p == null) return null;
-        if (p.vol.length != DEF_SX * DEF_SY * DEF_SZ) return null;
-        return p.vol;
+        if (p.density.length != DEF_SX * DEF_SY * DEF_SZ) return null;
+        return p.density;
     }
 
     /**
