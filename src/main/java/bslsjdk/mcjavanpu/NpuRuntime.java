@@ -106,7 +106,8 @@ public final class NpuRuntime {
      */
     public static MatMulResult submitMatMulInt8(byte[] a,byte[] b,int m,int k,int n){
         if(!isAvailable()) return new MatMulResult(0,null,0,"MCNPU_OFFLINE "+getDeviceInfo());
-        return NpuServiceClient.submitBinMatMul8(a,b,m,k,n);
+        NpuServiceClient.MatMulResult r = NpuServiceClient.submitBinMatMul8(a,b,m,k,n);
+        return new MatMulResult(r.scaleC(), r.c(), r.us(), r.error());
     }
 
     public static synchronized void shutdown(){HtpBackend.getInstance().close();}
