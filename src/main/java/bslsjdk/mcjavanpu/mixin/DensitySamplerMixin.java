@@ -33,17 +33,43 @@ public abstract class DensitySamplerMixin {
         NpuTerrainHook.onVolumeShape(volume.sizeX(), volume.sizeY(), volume.sizeZ());
 
         if (!NpuConfig.get().enabled) return;
-        if (!"npu".equalsIgnoreCase(NpuConfig.get().chunkMode)) return;
+
+        final String mode = NpuConfig.get().chunkMode;
+        final boolean takeover = "npu".equalsIgnoreCase(mode);
+        final boolean assist = "assist".equalsIgnoreCase(mode);
+        if (!takeover && !assist) return;
         if (!NpuStats.BLOCKS.enabled) return;
 
-        // Seed from the chunk anchor: neighbours differ, repeats stay stable.
-        long seed = volume.minBlockX() * 341873128712L ^ volume.minBlockZ() * 132897987541L
-                  ^ volume.minBlockY() * 42317861L;
+        int sx = volume.sizeX(), sy = volume.sizeY(), sz = volume.sizeZ();
+        int ox = volume.minBlockX(), oy = volume.minBlockY(), oz = volume.minBlockZ();
+        int cx = ox >> 4, cz = oz >> 4;
 
+        if (assist) {
+            // Assist = the work was done earlier on a background thread.
+            //
+            // A hit costs a memory copy and vanilla never runs for this chunk.
+            // A miss falls straight through to the vanilla sampler, which is exactly what would
+            // have happened without us, plus a prefetch request so the NEXT time this chunk is
+            // touched (or its neighbours) we may hit. Nothing here ever waits on the NPU, which
+            // is the whole point: an assist that can stall is worse than no assist.
+            float[] prepared = NpuTerrainAssist.take(cx, cz, sx, sy, sz, oy);
+            if (prepared == null) {
+                NpuStats.BLOCKS.record(0, 0, 0);
+                return;
+            }
+            int n = Math.min(buffer.size(), prepared.length);
+            long t0 = System.nanoTime();
+            for (int i = 0; i < n; i++) buffer.set(i, prepared[i]);
+            long us = (System.nanoTime() - t0) / 1000;
+            NpuStats.BLOCKS.record(n, 0, us);
+            ci.cancel();
+            return;
+        }
+
+        // Takeover: generate here and now, vanilla never runs.
+        long seed = ox * 341873128712L ^ oz * 132897987541L ^ oy * 42317861L;
         long t0 = System.nanoTime();
-        NpuTerrainGen.Result r = NpuTerrainGen.generate(
-                volume.sizeX(), volume.sizeY(), volume.sizeZ(),
-                volume.minBlockX(), volume.minBlockY(), volume.minBlockZ(), seed);
+        NpuTerrainGen.Result r = NpuTerrainGen.generate(sx, sy, sz, ox, oy, oz, seed);
         long wallUs = (System.nanoTime() - t0) / 1000;
 
         if (!r.usedNpu) {
