@@ -78,8 +78,35 @@ public final class NpuScreen extends Screen {
     private void toggleConfig(String key) {
         cfg().toggle(key);
         NpuLog.log("screen toggle " + key + " -> " + cfg().describe());
+        // Changing a mode is invisible until the world rebuilds its light: already-lit
+        // chunks keep whatever the previous mode produced. Ask the engine to redo it.
+        if ("lightMode".equals(key) || "chunkMode".equals(key)) {
+            requestReload();
+        }
         this.rebuildWidgets();
         refresh();
+    }
+
+    /** Sends /npu reloadchunks through the normal command path, reflectively. */
+    private void requestReload() {
+        try {
+            Minecraft mc = Minecraft.getInstance();
+            if (mc == null || mc.player == null || mc.player.connection == null) return;
+            Object conn = mc.player.connection;
+            String cmd = "npu reloadchunks " + Math.max(1, cfg().lightFoldRadius + 1);
+            for (String m : new String[]{"sendCommand", "sendUnsignedCommand"}) {
+                try {
+                    conn.getClass().getMethod(m, String.class).invoke(conn, cmd);
+                    NpuLog.log("mode switched, asked engine to rebuild light: /" + cmd);
+                    return;
+                } catch (NoSuchMethodException ignored) {
+                    // try the next spelling
+                }
+            }
+            NpuLog.log("mode switched, but no sendCommand found - run /npu reloadchunks by hand");
+        } catch (Throwable t) {
+            NpuLog.error("auto reload after mode switch failed", t);
+        }
     }
 
     private void refresh() {
