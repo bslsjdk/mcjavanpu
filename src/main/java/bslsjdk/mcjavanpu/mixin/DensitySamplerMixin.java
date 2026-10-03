@@ -29,6 +29,15 @@ import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 @Mixin(targets = "net.minecraft.world.level.levelgen.densityfunction.DensitySampler$Bound")
 public abstract class DensitySamplerMixin {
 
+    /**
+     * Side of the chunk square generated per submission.
+     *
+     * Two by two is what the element budget supports honestly (4 x 225 x 16 = 14400 <= 16384),
+     * and it matches how chunks actually load: the player walks, and the next chunk is a
+     * neighbour, not something twenty chunks away.
+     */
+    private static final int BATCH_SIDE = 2;
+
     @Inject(method = "sampleVolume", at = @At("HEAD"), cancellable = true, require = 0)
     private void mcjavanpu$onSampleVolume(DensityBuffer buffer, DensityVolume volume, CallbackInfo ci) {
         if (volume == null || buffer == null) return;
@@ -69,20 +78,63 @@ public abstract class DensitySamplerMixin {
         }
 
         // Takeover: generate here and now, vanilla never runs.
-        long seed = ox * 341873128712L ^ oz * 132897987541L ^ oy * 42317861L;
-        long t0 = System.nanoTime();
-        NpuTerrainLattice.Result r = NpuTerrainLattice.generate(sx, sy, sz, ox, oy, oz, seed);
-        long wallUs = (System.nanoTime() - t0) / 1000;
+        //
+        // Batching is not optional here. One submission costs ~50 ms of fixed overhead
+        // (IPC round trip, graph lookup, QNN dispatch) regardless of how tiny the matrices are,
+        // and the volume of one chunk is 225 lattice points - far too little work to amortise
+        // that. The element budget allows exactly four chunks per call (4 x 225 x 16 = 14400 of
+        // 16384), so every miss generates the current chunk plus its three neighbours, serves
+        // this one immediately, and parks the rest. Chunk number two through four of the same
+        // batch then cost a map lookup instead of another 50 ms.
+        float[] parked = NpuTerrainAssist.peekTakeover(cx, cz, oy);
+        if (parked != null) {
+            int np = Math.min(buffer.size(), parked.length);
+            for (int i = 0; i < np; i++) buffer.set(i, parked[i]);
+            NpuTerrainAssist.countTakeoverServed();
+            NpuStats.BLOCKS.record(np, 0, 0);
+            ci.cancel();
+            return;
+        }
 
-        if (!r.usedNpu) {
+        float[] mine = null;
+        long npuUs = 0, interpUs = 0;
+        long t0 = System.nanoTime();
+
+        int batchSize = Math.min(BATCH_SIDE * BATCH_SIDE,
+                NpuTerrainLattice.maxChunksPerSubmit(sx, sy, sz) * BATCH_SIDE * BATCH_SIDE);
+        batchSize = Math.max(1, Math.min(batchSize, 4));
+        int[] cxs = new int[batchSize];
+        int[] czs = new int[batchSize];
+        int[] oys = new int[batchSize];
+        long[] seeds = new long[batchSize];
+        for (int b = 0; b < batchSize; b++) {
+            int bx = cx + (b % BATCH_SIDE);
+            int bz = cz + (b / BATCH_SIDE);
+            cxs[b] = bx; czs[b] = bz; oys[b] = oy;
+            long bx0 = bx << 4, bz0 = bz << 4;
+            seeds[b] = bx0 * 341873128712L ^ bz0 * 132897987541L ^ oy * 42317861L;
+        }
+        long[] on = new long[1], op = new long[1], oi = new long[1];
+        float[][] batch = NpuTerrainLattice.generateMulti(batchSize, cxs, czs, oys, seeds,
+                sx, sy, sz, on, op, oi);
+        long wallUs = (System.nanoTime() - t0) / 1000;
+        npuUs = on[0]; interpUs = oi[0];
+        if (batch.length > 0) mine = batch[0];
+
+        if (mine == null) {
             // Never take the world down with us: fall through to the vanilla sampler.
             NpuStats.BLOCKS.record(buffer.size(), 0, wallUs);
             return;
         }
 
-        int n = Math.min(buffer.size(), r.density.length);
-        for (int i = 0; i < n; i++) buffer.set(i, r.density[i]);
-        NpuStats.BLOCKS.record(n, r.npuUs + r.interpUs, wallUs);
+        for (int b = 1; b < batch.length; b++) {
+            NpuTerrainAssist.put(cxs[b], czs[b], oys[b], batch[b]);
+        }
+        NpuTerrainAssist.countTakeoverBatch();
+
+        int n = Math.min(buffer.size(), mine.length);
+        for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
+        NpuStats.BLOCKS.record(n, npuUs + interpUs, wallUs);
         ci.cancel();
     }
 }
