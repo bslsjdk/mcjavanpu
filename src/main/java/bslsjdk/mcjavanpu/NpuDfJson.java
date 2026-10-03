@@ -156,8 +156,29 @@ public final class NpuDfJson {
                 b.noiseNodes.put(name, NpuDf.constant(0));
                 return NpuDf.noise(NpuNoiseCatalog.get(name, seed), xz, y);
             }
-            case "spline":
-                return NpuDf.spline(child(o, "spline", seed, b, memo), null);
+            case "spline": {
+                JsonObject sp = o.getAsJsonObject("spline");
+                NpuDf coord = child(sp, "coordinate", seed, b, memo);
+                JsonArray pts = sp.getAsJsonArray("points");
+                int n = pts.size();
+                double[] xs = new double[n], ys = new double[n], ds = new double[n];
+                boolean numeric = true;
+                for (int i = 0; i < n; i++) {
+                    JsonObject pt = pts.get(i).getAsJsonObject();
+                    xs[i] = pt.get("location").getAsDouble();
+                    JsonElement val = pt.get("value");
+                    if (val != null && val.isJsonPrimitive()) ys[i] = val.getAsDouble();
+                    else numeric = false;              // nested spline as a knot value
+                    JsonElement der = pt.get("derivative");
+                    ds[i] = der != null && der.isJsonPrimitive() ? der.getAsDouble() : 0.0;
+                }
+                if (!numeric || n < 2) {
+                    b.unsupported++;
+                    b.unsupportedTypes.merge("spline:nested", 1, Integer::sum);
+                    return NpuDf.constant(0.0);
+                }
+                return NpuDf.spline(coord, new NpuDf.Spline(xs, ys, ds));
+            }
             default:
                 b.unsupported++;
                 b.unsupportedTypes.merge(type, 1, Integer::sum);
