@@ -78,4 +78,28 @@ public final class NpuStats {
         for (Feature f : ALL) sb.append("\n").append(f.line());
         return sb.toString();
     }
+
+    /**
+     * Proof that the density hook is actually live.
+     *
+     * These counters live here rather than in the mixin because Mixin forbids non-private static
+     * members on a mixin class - declaring one there makes the whole injection fail, which is what
+     * crashed the game (InvalidMixinException: contains non-private static method).
+     */
+    public static final java.util.concurrent.atomic.AtomicLong MIXIN_SEEN =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    public static void recordMixinSeen() { MIXIN_SEEN.incrementAndGet(); }
+
+    public static long mixinSeen() { return MIXIN_SEEN.get(); }
+
+    public static boolean mixinAnnounced;
+
+    /** Logs once, the first time the game actually hands us a volume. */
+    public static void announceMixinOnce() {
+        if (mixinAnnounced) return;
+        mixinAnnounced = true;
+        NpuLog.log("MIXIN_ACTIVE DensitySampler$Bound.sampleVolume called by the game");
+    }
+
 }
