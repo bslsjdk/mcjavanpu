@@ -61,6 +61,14 @@ public final class NpuFeaturesScreen extends Screen {
         y += 24;
 
         addRenderableWidget(Button.builder(
+                Component.literal((cfg.skyLight ? "[开] " : "[关] ") + "天空光 skyLight"),
+                b -> { NpuConfig.get().toggle("skyLight"); this.rebuildWidgets();
+                       this.status = "skyLight -> " + NpuConfig.get().skyLight
+                               + " (近似算子，只提亮不调暗)"; })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
+        addRenderableWidget(Button.builder(
                 Component.literal((cfg.guardEnabled ? "[开] " : "[关] ") + "自适应降级 guard"),
                 b -> { NpuConfig.get().toggle("guardEnabled"); this.rebuildWidgets();
                        this.status = "guardEnabled -> " + NpuConfig.get().guardEnabled; })
