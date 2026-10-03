@@ -29,6 +29,18 @@ public final class NpuWorkQueue {
     /** Hard cap on queued work. Full means drop. */
     private static final int QUEUE_CAP = 512;
 
+    /**
+     * Wall-clock budget for one pump, in microseconds.
+     *
+     * pump() runs on the server thread and each item performs a synchronous IPC
+     * round trip, whose read timeout is far larger than a tick. Health is cached
+     * so the common case is fast, but a service that is up and merely slow would
+     * otherwise stall world loading for seconds at a time. Once the budget is
+     * spent the remaining items stay queued for the next tick.
+     */
+    private static volatile long budgetUs = 4_000L;
+    private static final AtomicLong OVERRUNS = new AtomicLong();
+
     private static final ArrayDeque<long[]> QUEUE = new ArrayDeque<>();
     private static final AtomicLong SUBMITTED = new AtomicLong();
     private static final AtomicLong PROCESSED = new AtomicLong();
@@ -76,6 +88,13 @@ public final class NpuWorkQueue {
         long t0 = System.nanoTime();
         int ok = 0;
         for (long[] it : batch) {
+            // Stop as soon as the budget is gone. Whatever is left waits for the
+            // next tick rather than eating into it.
+            if ((System.nanoTime() - t0) / 1000L >= budgetUs) {
+                synchronized (NpuWorkQueue.class) { QUEUE.addFirst(it); }
+                OVERRUNS.incrementAndGet();
+                break;
+            }
             try {
                 // One entry point for doing NPU work for a just-loaded chunk. Kept behind a
                 // single method so the light side can grow without touching the scheduler.
@@ -93,7 +112,11 @@ public final class NpuWorkQueue {
     public static String summary() {
         return "work submitted=" + SUBMITTED.get() + " processed=" + PROCESSED.get()
                 + " pending=" + pending() + "/" + QUEUE_CAP + " dropped=" + DROPPED.get()
-                + " failed=" + FAILED.get() + " last_us=" + lastRunUs
+                + " failed=" + FAILED.get() + " overruns=" + OVERRUNS.get()
+                + " last_us=" + lastRunUs + " budget_us=" + budgetUs
                 + (lastError.isEmpty() ? "" : " lastError=" + lastError);
     }
+    /** Wall-clock budget for one pump, in microseconds. */
+    public static void setBudgetUs(long v) { budgetUs = Math.max(500L, v); }
+    public static long budgetUs() { return budgetUs; }
 }
