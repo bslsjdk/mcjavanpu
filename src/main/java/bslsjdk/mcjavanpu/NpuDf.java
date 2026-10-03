@@ -1,0 +1,150 @@
+package bslsjdk.mcjavanpu;
+
+import java.util.HashMap;
+import java.util.Map;
+
+/**
+ * An executable form of vanilla's DensityFunction tree.
+ *
+ * Vanilla describes terrain as a tree of small pure functions (add / mul / noise / spline / ...)
+ * loaded from JSON. This class rebuilds that tree in a form we control, so the maths stays
+ * vanilla while the evaluation strategy is ours: today it runs on the CPU, and the leaf nodes
+ * are shaped so a batch of them can be handed to the NPU later.
+ *
+ * Every node is a function of (x, y, z) only - no object graph, no registry, no Minecraft
+ * classes - which is what makes it possible to evaluate a whole chunk in a tight loop.
+ */
+public abstract class NpuDf {
+
+    public abstract double get(double x, double y, double z);
+
+    /** Clears per-node caches; called between chunks so caches never leak across. */
+    public void reset() {}
+
+    // ------------------------------------------------------------- leaves
+
+    public static NpuDf constant(final double v) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) { return v; }
+            @Override public String toString() { return "const(" + v + ")"; }
+        };
+    }
+
+    /** yClampedGradient: linearly interpolates a value between two heights. */
+    public static NpuDf yClampedGradient(final int fromY, final int toY,
+                                         final double fromValue, final double toValue) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                double t = (y - fromY) / (double) (toY - fromY);
+                if (t < 0) t = 0; else if (t > 1) t = 1;
+                return fromValue + t * (toValue - fromValue);
+            }
+            @Override public String toString() { return "yGrad(" + fromY + "," + toY + ")"; }
+        };
+    }
+
+    /** A noise channel with optional xz / y scale, exactly like vanilla's noise node. */
+    public static NpuDf noise(final NpuNoise.NormalNoise n, final double xzScale, final double yScale) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                return n.getValue(x * xzScale, y * yScale, z * xzScale);
+            }
+            @Override public String toString() { return "noise(xz=" + xzScale + ",y=" + yScale + ")"; }
+        };
+    }
+
+    // ------------------------------------------------------------ unary
+
+    public interface Unary { double apply(double v); }
+
+    public static NpuDf unary(final NpuDf in, final Unary f, final String name) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) { return f.apply(in.get(x, y, z)); }
+            @Override public void reset() { in.reset(); }
+            @Override public String toString() { return name + "(" + in + ")"; }
+        };
+    }
+
+    /** vanilla: v > 0 ? v : v * 0.25 */
+    public static NpuDf quarterNegative(NpuDf in) {
+        return unary(in, v -> v > 0 ? v : v * 0.25, "quarterNegative");
+    }
+
+    /** vanilla: v > 0 ? v : v * 0.5 */
+    public static NpuDf halfNegative(NpuDf in) {
+        return unary(in, v -> v > 0 ? v : v * 0.5, "halfNegative");
+    }
+
+    public static NpuDf clamp(NpuDf in, final double lo, final double hi) {
+        return unary(in, v -> v < lo ? lo : (v > hi ? hi : v), "clamp");
+    }
+
+    public static NpuDf abs(NpuDf in) { return unary(in, Math::abs, "abs"); }
+    public static NpuDf square(NpuDf in) { return unary(in, v -> v * v, "square"); }
+    public static NpuDf cube(NpuDf in) { return unary(in, v -> v * v * v, "cube"); }
+
+    // ----------------------------------------------------------- binary
+
+    public interface Binary { double apply(double a, double b); }
+
+    public static NpuDf binary(final NpuDf a, final NpuDf b, final Binary f, final String name) {
+        return new NpuDf() {
+            @Override public double get(double x, double y, double z) {
+                return f.apply(a.get(x, y, z), b.get(x, y, z));
+            }
+            @Override public void reset() { a.reset(); b.reset(); }
+            @Override public String toString() { return name + "(" + a + "," + b + ")"; }
+        };
+    }
+
+    public static NpuDf add(NpuDf a, NpuDf b) { return binary(a, b, (p, q) -> p + q, "add"); }
+    public static NpuDf sub(NpuDf a, NpuDf b) { return binary(a, b, (p, q) -> p - q, "sub"); }
+    public static NpuDf mul(NpuDf a, NpuDf b) { return binary(a, b, (p, q) -> p * q, "mul"); }
+    public static NpuDf min(NpuDf a, NpuDf b) { return binary(a, b, Math::min, "min"); }
+    public static NpuDf max(NpuDf a, NpuDf b) { return binary(a, b, Math::max, "max"); }
+
+    // ------------------------------------------------------------ cache
+
+    /**
+     * vanilla's cache node: memoises the last computed position.
+     *
+     * Cheap here, but the reason it exists matters for us: it means the same subtree is often
+     * queried repeatedly at one point, so a batched NPU implementation may be able to reuse an
+     * intermediate instead of recomputing it per sample.
+     */
+    public static NpuDf cache(final NpuDf in) {
+        return new NpuDf() {
+            private double lx = Double.NaN, ly, lz, lv;
+            @Override public double get(double x, double y, double z) {
+                if (x == lx && y == ly && z == lz) return lv;
+                lx = x; ly = y; lz = z;
+                lv = in.get(x, y, z);
+                return lv;
+            }
+            @Override public void reset() { lx = Double.NaN; in.reset(); }
+            @Override public String toString() { return "cache(" + in + ")"; }
+        };
+    }
+
+    /**
+     * slopedCheese structure, assembled by hand from
+     * data/minecraft/worldgen/density_function/overworld/*.json.
+     *
+     *   slopedCheese = add( mul( quarterNegative( mul( add(depth, jaggedTerm), factor ) ), 4 ), base3d )
+     *   jaggedTerm  = mul( jaggedness, halfNegative( noise(jagged, xz=1500, y=0) ) )
+     */
+    public static NpuDf slopedCheese(NpuDf depth, NpuDf factor, NpuDf jaggedness,
+                                     NpuNoise.NormalNoise jagged, NpuDf base3d) {
+        NpuDf jaggedTerm = mul(jaggedness, halfNegative(noise(jagged, 1500.0, 0.0)));
+        NpuDf inner = add(depth, cache(jaggedTerm));
+        return cache(add(mul(quarterNegative(mul(inner, factor)), 4.0), base3d));
+    }
+
+    /** Recursively counts leaves, to show how much work one sample represents. */
+    public int leafCount() { return 1; }
+
+    /** Collects noise leaves so a batched evaluator can find them. */
+    public void collectNoise(Map<String, NpuNoise.NormalNoise> out, String path) {}
+
+    @Override public String toString() { return "df"; }
+}
