@@ -12,6 +12,13 @@ import java.util.Properties;
  *  autoWarmup - build + calibrate the graphs in the background at world load,
  *               so the very first real use is not the slow path
  *  debugLog   - log every call instead of only summaries
+ *  autoProbe  - run the full diagnostic set unattended at game start and keep a
+ *               rolling heartbeat. Results go to logs/mcjavanpu-npu.log. This is
+ *               what makes the mod measurable without typing a command.
+ *  guardEnabled - adaptive backoff. Watches the p99 cost of real calls and
+ *               temporarily disables the NPU when it stops being worth it, then
+ *               re-arms on its own. Protects the frame rate rather than the
+ *               benchmark number.
  *  lightBatch - how many 8x8x8 blocks go into one propagation batch (legacy)
  *  lightMode - how light maths runs:
  *                 VANILLA - hands off, the game does exactly what it always did
@@ -26,6 +33,11 @@ public final class NpuConfig {
     public boolean enabled = true;
     public boolean autoWarmup = true;
     public boolean debugLog = false;
+
+    /** Run the full diagnostic set by itself once the world is up. */
+    public boolean autoProbe = true;
+    /** Back off automatically when the NPU stops paying for itself. */
+    public boolean guardEnabled = true;
     public int lightBatch = 128;
     public int lightFoldRadius = 1;
 
@@ -69,6 +81,8 @@ public final class NpuConfig {
             enabled = Boolean.parseBoolean(pr.getProperty("enabled", "true"));
             autoWarmup = Boolean.parseBoolean(pr.getProperty("autoWarmup", "true"));
             debugLog = Boolean.parseBoolean(pr.getProperty("debugLog", "false"));
+            autoProbe = Boolean.parseBoolean(pr.getProperty("autoProbe", "true"));
+            guardEnabled = Boolean.parseBoolean(pr.getProperty("guardEnabled", "true"));
             lightBatch = Integer.parseInt(pr.getProperty("lightBatch", "128"));
             lightFoldRadius = Integer.parseInt(pr.getProperty("lightFoldRadius", "1"));
             // A radius of 3+ folds 49+ sections into one submit and can overrun the single
@@ -90,6 +104,8 @@ public final class NpuConfig {
             pr.setProperty("enabled", String.valueOf(enabled));
             pr.setProperty("autoWarmup", String.valueOf(autoWarmup));
             pr.setProperty("debugLog", String.valueOf(debugLog));
+            pr.setProperty("autoProbe", String.valueOf(autoProbe));
+            pr.setProperty("guardEnabled", String.valueOf(guardEnabled));
             pr.setProperty("lightBatch", String.valueOf(lightBatch));
             pr.setProperty("lightFoldRadius", String.valueOf(lightFoldRadius));
             pr.setProperty("lightMode", lightMode);
@@ -110,6 +126,8 @@ public final class NpuConfig {
             case "enabled": enabled = !enabled; break;
             case "autoWarmup": autoWarmup = !autoWarmup; break;
             case "debugLog": debugLog = !debugLog; break;
+            case "autoProbe": autoProbe = !autoProbe; break;
+            case "guardEnabled": guardEnabled = !guardEnabled; break;
             case "lightFoldRadius": lightFoldRadius = (lightFoldRadius + 1) % 5; break;
             case "lightMode": lightMode = nextMode(lightMode); break;
             case "chunkMode": chunkMode = nextMode(chunkMode); break;
@@ -121,7 +139,9 @@ public final class NpuConfig {
 
     public String describe() {
         return "enabled=" + enabled + " autoWarmup=" + autoWarmup
-                + " debugLog=" + debugLog + " lightBatch=" + lightBatch
+                + " debugLog=" + debugLog + " autoProbe=" + autoProbe
+                + " guardEnabled=" + guardEnabled
+                + " lightBatch=" + lightBatch
                 + " lightFoldRadius=" + lightFoldRadius
                 + " lightMode=" + lightMode + " chunkMode=" + chunkMode;
     }
