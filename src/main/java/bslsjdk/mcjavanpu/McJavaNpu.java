@@ -19,6 +19,60 @@ public final class McJavaNpu implements ModInitializer {
         System.out.println("[MCJavaNPU] initialized");
     }
 
+    /**
+     * Real-data demo: a batch of `points` points x 16 features x 32 outputs goes
+     * through the binary IPC to the HTP, then the same multiply is done locally
+     * so the command reports a genuine speedup and a correctness delta.
+     */
+    private static int runSubmit(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int points, int k, int w) {
+        int m = points;
+        byte[] A = new byte[m * k];
+        byte[] B = new byte[k * w];
+        java.util.Random rnd = new java.util.Random(1234);
+        rnd.nextBytes(A);
+        rnd.nextBytes(B);
+
+        long t0 = System.nanoTime();
+        NpuRuntime.MatMulResult res = NpuRuntime.submitMatMulInt8(A, B, m, k, w);
+        long npuUs = (System.nanoTime() - t0) / 1000;
+        if (!res.ok()) {
+            final String err = res.error();
+            context.getSource().sendSuccess(() -> Component.literal("[NPU] submit FAILED: " + err), false);
+            return 0;
+        }
+
+        long t1 = System.nanoTime();
+        float[] ref = new float[m * w];
+        for (int i = 0; i < m; i++) {
+            for (int p = 0; p < k; p++) {
+                int av = A[i * k + p];
+                for (int j = 0; j < w; j++) ref[i * w + j] += av * B[p * w + j];
+            }
+        }
+        long javaUs = (System.nanoTime() - t1) / 1000;
+
+        int bad = 0;
+        float maxAbs = 0f;
+        byte[] c = res.c();
+        for (int i = 0; i < m; i++) {
+            for (int j = 0; j < w; j++) {
+                float got = c[i * w + j] * res.scaleC();
+                float d = Math.abs(got - ref[i * w + j]);
+                if (d > 2.5f * res.scaleC() + 0.05f * Math.abs(ref[i * w + j])) bad++;
+                if (d > maxAbs) maxAbs = d;
+            }
+        }
+        final String line = "[NPU] submit points=" + m + " k=" + k + " w=" + w
+                + " npu_us=" + npuUs + " java_us=" + javaUs
+                + " speedup=" + String.format(java.util.Locale.ROOT, "%.2fx", javaUs / (double) Math.max(1, npuUs))
+                + " bad=" + bad + "/" + (m * w)
+                + " max_abs=" + String.format(java.util.Locale.ROOT, "%.4f", maxAbs)
+                + " scaleC=" + res.scaleC();
+        context.getSource().sendSuccess(() -> Component.literal(line), false);
+        System.out.println("[MCJavaNPU] " + line);
+        return bad == 0 ? 1 : 0;
+    }
+
     private static int runMatMulInt8(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int m, int k, int n) {
         String result = NpuRuntime.matMulInt8(m, k, n);
         context.getSource().sendSuccess(() -> Component.literal("[NPU] " + result), false);
@@ -73,6 +127,11 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "m"),
                                                         IntegerArgumentType.getInteger(context, "k"),
                                                         IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("submit")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runSubmit(context, 16384, 16, 32))
+                        .then(Commands.argument("points", IntegerArgumentType.integer(16, 262144))
+                                .executes(context -> runSubmit(context, IntegerArgumentType.getInteger(context, "points"), 16, 32))))
                 .then(Commands.literal("info")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
