@@ -264,7 +264,7 @@ public final class NpuServiceClient {
         if (waitUs > LOCK_WAIT_MAX_US.get()) LOCK_WAIT_MAX_US.set(waitUs);
         long t = System.nanoTime();
         try {
-            return submitBinMatMul8Locked(A, B, m, k, n);
+            return submitBinMatMul8Locked(A, B, m, k, n, total0);
         } finally {
             long us = (System.nanoTime() - t) / 1000;
             IN_LOCK_US.addAndGet(us);
@@ -274,7 +274,12 @@ public final class NpuServiceClient {
         }
     }
 
-    private static MatMulResult submitBinMatMul8Locked(byte[] A, byte[] B, int m, int k, int n) {
+    /**
+     * total0 is the timestamp taken before the lock was acquired, so the end-to-end
+     * figure below includes queueing. It has to be passed in: it lives in the caller's
+     * frame, and reading it from here would not compile.
+     */
+    private static MatMulResult submitBinMatMul8Locked(byte[] A, byte[] B, int m, int k, int n, long total0) {
         if (A == null || B == null || m <= 0 || k <= 0 || n <= 0) return new MatMulResult(0, null, 0, "BAD_ARGS");
         if ((long) A.length != (long) m * k || (long) B.length != (long) k * n) return new MatMulResult(0, null, 0, "BAD_SIZE");
         if ((long) A.length + B.length > MAX_PAYLOAD_BYTES) {
