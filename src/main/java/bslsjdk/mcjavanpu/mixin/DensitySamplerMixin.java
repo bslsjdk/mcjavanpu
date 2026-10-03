@@ -75,6 +75,14 @@ public abstract class DensitySamplerMixin {
                 NpuStats.BLOCKS.record(0, 0, 0);
                 return;
             }
+            // Assist is not automatically safe. A cache hit here still replaces the
+            // vanilla volume with whatever the interpreter produced, so it goes
+            // through the same gate as takeover. When the gate refuses we do NOT
+            // cancel, and vanilla generates the chunk exactly as it always would.
+            if (!NpuTerrainGate.allowWrite(cx, cz, prepared, buffer.size())) {
+                NpuStats.BLOCKS.record(0, 0, 0);
+                return;
+            }
             int n = Math.min(buffer.size(), prepared.length);
             long t0 = System.nanoTime();
             for (int i = 0; i < n; i++) buffer.set(i, prepared[i]);
@@ -99,6 +107,10 @@ public abstract class DensitySamplerMixin {
         // the neighbours and the walk-ahead, so the hit rate rises as the player moves.
         float[] mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
         if (mine != null) {
+            if (!NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
+                NpuStats.BLOCKS.record(0, 0, 0);
+                return;
+            }
             int n = Math.min(buffer.size(), mine.length);
             for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
             NpuTerrainAssist.countTakeoverServed();
