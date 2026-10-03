@@ -93,11 +93,24 @@ public final class NpuChunkWork {
         try {
             engine = level.getClass().getMethod("getLightEngine").invoke(level);
             Class<?> ll = Class.forName("net.minecraft.world.level.LightLayer");
-            for (Object o : ll.getEnumConstants()) if ("BLOCK".equals(String.valueOf(o))) layer = o;
+            Object blockLayer = null, skyLayer = null;
+            for (Object o : ll.getEnumConstants()) {
+                String nm = String.valueOf(o);
+                if ("BLOCK".equals(nm)) blockLayer = o;
+                else if ("SKY".equals(nm)) skyLayer = o;
+            }
+            layer = blockLayer;
             if (engine == null || layer == null) return false;
             if (!NpuServiceClient.healthy()) return false;
 
-            // getLayerListener(LightLayer) -> LayerLightEventListener -> getDataLayerData(SectionPos)
+            // Sky light is the same shape of work as block light - one operator applied to
+            // a whole 8x8x8 block - so it rides the exact same path. It is opt-in because
+            // its propagation rule differs (it does not attenuate on the way down until
+            // something opaque stops it), so the linearised operator is only an
+            // approximation there. Raise-only still applies, so the vanilla result is
+            // always the floor.
+            boolean doSky = NpuConfig.get().skyLight && skyLayer != null;
+
             Object listener = resolveListener(engine, layer);
             if (listener == null) return false;
 
@@ -106,6 +119,12 @@ public final class NpuChunkWork {
             java.lang.reflect.Method getData = rc.getDataLayerData;
             java.lang.reflect.Method spOf = rc.sectionPosOf;
             java.lang.reflect.Method queue = rc.queueSectionData;
+
+            Object skyListener = null;
+            if (doSky) {
+                skyListener = resolveListener(engine, skyLayer);
+                if (skyListener == null) doSky = false;
+            }
 
             // LevelHeightAccessor names these getMinSectionY/getMaxSectionY; there is no
             // getMinSection() in this version. Both are inclusive section coordinates.
@@ -117,50 +136,18 @@ public final class NpuChunkWork {
             int done = 0;
             for (int sy = maxSec - 1; sy >= minSec && done < MAX_SECTIONS_PER_CHUNK; sy--) {
                 Object sp = spOf.invoke(null, cx, sy, cz);
-                Object dl = getData.invoke(listener, sp);
-                if (!(dl instanceof DataLayer dataLayer)) continue;
 
-                // Gather the eight sub-blocks in the operator's own layout: (y*8 + z)*8 + x.
-                byte[] a = new byte[SUB_COUNT * NpuLightAccel.CELLS];
-                boolean any = false;
-                for (int b = 0; b < SUB_COUNT; b++) {
-                    int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
-                    int base = b * NpuLightAccel.CELLS;
-                    for (int y = 0; y < 8; y++) {
-                        for (int z = 0; z < 8; z++) {
-                            for (int x = 0; x < 8; x++) {
-                                int v = dataLayer.get(ox + x, oy + y, oz + z);
-                                if (v != 0) any = true;
-                                a[base + (y * 8 + z) * 8 + x] = (byte) v;
-                            }
-                        }
+                boolean anyBlock = propagateSection(engine, listener, getData, queue, sp,
+                        blockLayer, sp, cx, sy, cz);
+                if (anyBlock) done++;
+
+                if (doSky && skyListener != null) {
+                    Object dlSky = getData.invoke(skyListener, sp);
+                    if (dlSky instanceof DataLayer) {
+                        propagateSection(engine, skyListener, getData, queue, sp,
+                                skyLayer, sp, cx, sy, cz);
                     }
                 }
-                if (!any) continue;   // fully dark section, nothing to propagate
-
-                NpuLightAccel.Result r = NpuLightAccel.propagateReal(a, SUB_COUNT);
-                if (!r.ok || r.out == null) continue;
-
-                // Write back through the quantised accessor. Raise-only: the NPU may brighten a
-                // cell but must never darken the world, so the vanilla result always stands as
-                // a floor if it happens to be brighter.
-                for (int b = 0; b < SUB_COUNT; b++) {
-                    int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
-                    for (int y = 0; y < 8; y++) {
-                        for (int z = 0; z < 8; z++) {
-                            for (int x = 0; x < 8; x++) {
-                                int cell = (y * 8 + z) * 8 + x;
-                                int nv = r.light(b, cell);
-                                int cur = dataLayer.get(ox + x, oy + y, oz + z);
-                                if (nv > cur) dataLayer.set(ox + x, oy + y, oz + z, nv > 15 ? 15 : nv);
-                            }
-                        }
-                    }
-                }
-                if (queue != null) {
-                    try { queue.invoke(engine, layer, sp, dataLayer); } catch (Throwable ignored) {}
-                }
-                done++;
             }
             return done > 0;
         } catch (Throwable t) {
@@ -245,6 +232,70 @@ public final class NpuChunkWork {
                 return null;
             }
         }
+    }
+
+
+    /**
+     * One section of one light layer: gather, run through the NPU operator, write back.
+     * Returns true when anything was written.
+     *
+     * Write-back is raise-only. The NPU may brighten a cell but must never darken
+     * the world, so the vanilla result always stands as a floor. That is what makes
+     * an approximate operator safe to use here.
+     */
+    private static boolean propagateSection(Object engine, Object listener,
+                                            java.lang.reflect.Method getData,
+                                            java.lang.reflect.Method queue,
+                                            Object sp, Object layer, Object spForQueue,
+                                            int cx, int sy, int cz) {
+        Object dl;
+        try {
+            dl = getData.invoke(listener, sp);
+        } catch (Throwable t) {
+            return false;
+        }
+        if (!(dl instanceof DataLayer dataLayer)) return false;
+
+        // Gather the eight sub-blocks in the operator's own layout: (y*8 + z)*8 + x.
+        byte[] a = new byte[SUB_COUNT * NpuLightAccel.CELLS];
+        boolean any = false;
+        for (int b = 0; b < SUB_COUNT; b++) {
+            int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
+            int base = b * NpuLightAccel.CELLS;
+            for (int y = 0; y < 8; y++) {
+                for (int z = 0; z < 8; z++) {
+                    for (int x = 0; x < 8; x++) {
+                        int v = dataLayer.get(ox + x, oy + y, oz + z);
+                        if (v != 0) any = true;
+                        a[base + (y * 8 + z) * 8 + x] = (byte) v;
+                    }
+                }
+            }
+        }
+        if (!any) return false;   // fully dark section, nothing to propagate
+
+        NpuLightAccel.Result r = NpuLightAccel.propagateReal(a, SUB_COUNT);
+        if (!r.ok || r.out == null) return false;
+
+        try {
+            for (int b = 0; b < SUB_COUNT; b++) {
+                int ox = SUB[b][0], oy = SUB[b][1], oz = SUB[b][2];
+                for (int y = 0; y < 8; y++) {
+                    for (int z = 0; z < 8; z++) {
+                        for (int x = 0; x < 8; x++) {
+                            int cell = (y * 8 + z) * 8 + x;
+                            int nv = r.light(b, cell);
+                            int cur = dataLayer.get(ox + x, oy + y, oz + z);
+                            if (nv > cur) dataLayer.set(ox + x, oy + y, oz + z, nv > 15 ? 15 : nv);
+                        }
+                    }
+                }
+            }
+            if (queue != null) queue.invoke(engine, layer, spForQueue, dataLayer);
+        } catch (Throwable t) {
+            return false;
+        }
+        return true;
     }
 
 }
