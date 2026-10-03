@@ -341,32 +341,58 @@ public final class McJavaNpu implements ModInitializer {
             // asking for the wrong one is what produced NoSuchMethodException here. Toggling a
             // whole chunk column off and on is the engine's own "discard and rebuild this light"
             // path, which is exactly what a mode comparison needs.
-            Class<?> cp = Class.forName("net.minecraft.world.level.ChunkPos");
-            java.lang.reflect.Constructor<?> cpNew = cp.getConstructor(int.class, int.class);
+            // The signature has moved more than once: SectionPos, then ChunkPos, and
+            // 26.3 renamed it again. Rather than hard-code one more guess, look for any
+            // two-arg method whose name mentions light+enabled and whose second
+            // parameter is a boolean, then build the position argument to match
+            // whatever its first parameter actually is.
             java.lang.reflect.Method setEnabled = null;
             for (java.lang.reflect.Method m : le.getClass().getMethods()) {
-                if (m.getName().equals("setLightEnabled") && m.getParameterCount() == 2
-                        && m.getParameterTypes()[0] == cp
-                        && m.getParameterTypes()[1] == boolean.class) {
+                String n = m.getName();
+                if (m.getParameterCount() == 2
+                        && m.getParameterTypes()[1] == boolean.class
+                        && n.toLowerCase().contains("light")
+                        && n.toLowerCase().contains("enabled")) {
                     setEnabled = m;
                     break;
                 }
             }
-            if (setEnabled == null) throw new NoSuchMethodException("setLightEnabled(ChunkPos, boolean)");
+            if (setEnabled == null) {
+                // Nothing matched. Say what IS there, so the next fix is not another guess.
+                StringBuilder dump = new StringBuilder("no light-enable method on "
+                        + le.getClass().getName() + "; candidates:");
+                for (java.lang.reflect.Method m : le.getClass().getMethods()) {
+                    String n = m.getName().toLowerCase();
+                    if (n.contains("light") || n.contains("enable")) {
+                        dump.append("\n  ").append(m.getName()).append("(");
+                        Class<?>[] ps = m.getParameterTypes();
+                        for (int i = 0; i < ps.length; i++) {
+                            if (i > 0) dump.append(", ");
+                            dump.append(ps[i].getSimpleName());
+                        }
+                        dump.append(")");
+                    }
+                }
+                NpuLog.warn(dump.toString());
+                throw new NoSuchMethodException("setLightEnabled-like(?, boolean)");
+            }
 
             int ccx = bx >> 4, ccz = bz >> 4;
             int cap = Math.max(0, Math.min(radius, 4));
             int done = 0;
+            Class<?> firstArg = setEnabled.getParameterTypes()[0];
             for (int dx = -cap; dx <= cap; dx++) {
                 for (int dz = -cap; dz <= cap; dz++) {
-                    Object chunkPos = cpNew.newInstance(ccx + dx, ccz + dz);
-                    setEnabled.invoke(le, chunkPos, false);
-                    setEnabled.invoke(le, chunkPos, true);
+                    Object arg = buildPosArg(firstArg, ccx + dx, ccz + dz);
+                    if (arg == null) break;
+                    setEnabled.invoke(le, arg, false);
+                    setEnabled.invoke(le, arg, true);
                     done++;
                 }
             }
             info = "mode_light=" + NpuConfig.get().lightMode + " mode_chunk=" + NpuConfig.get().chunkMode
-                    + " forced_recompute=" + done + " chunks";
+                    + " forced_recompute=" + done + " chunks"
+                    + " via=" + setEnabled.getName() + "(" + firstArg.getSimpleName() + ",boolean)";
         } catch (Throwable t) {
             info = "FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
         }
@@ -374,6 +400,29 @@ public final class McJavaNpu implements ModInitializer {
         context.getSource().sendSuccess(() -> Component.literal(line), false);
         NpuLog.log(line);
         return 0;
+    }
+
+    /**
+     * Builds the position argument for whatever the resolved method actually wants.
+     * Returns null when the type is one we cannot construct, so the caller skips
+     * instead of throwing.
+     */
+    private static Object buildPosArg(Class<?> type, int cx, int cz) {
+        try {
+            String n = type.getName();
+            if (n.endsWith("ChunkPos") || n.endsWith("SectionPos")) {
+                java.lang.reflect.Constructor<?> c = type.getConstructor(int.class, int.class);
+                return c.newInstance(cx, cz);
+            }
+            if (type == long.class || type == Long.class) {
+                // ChunkPos.asLong(): pack the two ints into one long.
+                return ((long) cx & 0xFFFFFFFFL) | (((long) cz & 0xFFFFFFFFL) << 32);
+            }
+            if (type == int.class || type == Integer.class) return cx;
+        } catch (Throwable t) {
+            NpuLog.warn("reloadchunks: cannot build " + type.getSimpleName() + " arg: " + t);
+        }
+        return null;
     }
 
     /**
