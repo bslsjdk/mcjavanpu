@@ -775,6 +775,29 @@ public final class McJavaNpu implements ModInitializer {
                         .executes(context -> runLightFold(context, 1))
                         .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
                                 .executes(context -> runLightFold(context, IntegerArgumentType.getInteger(context, "radius")))))
+                .then(Commands.literal("perf")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] " + NpuTelemetry.summary();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log(l);
+                            return 1;
+                        })
+                        .then(Commands.literal("dump")
+                                .executes(context -> {
+                                    NpuLog.log("telemetry dump
+" + NpuTelemetry.dump());
+                                    final String l = "[NPU] telemetry dump written to logs/mcjavanpu-npu.log";
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    return 1;
+                                }))
+                        .then(Commands.literal("reset")
+                                .executes(context -> {
+                                    NpuTelemetry.reset();
+                                    final String l = "[NPU] telemetry reset";
+                                    context.getSource().sendSuccess(() -> Component.literal(l), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("assist")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
