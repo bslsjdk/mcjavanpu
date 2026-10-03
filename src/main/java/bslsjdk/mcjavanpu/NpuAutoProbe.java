@@ -105,7 +105,9 @@ public final class NpuAutoProbe {
                 next = System.currentTimeMillis();
                 NpuLog.log("heartbeat | " + NpuStats.report().replace("\n", " ; ")
                         + " | guard=" + (NpuGuard.isDegraded() ? "DEGRADED " + NpuGuard.reason() : "ok")
-                        + " | service=" + (NpuRuntime.isAvailable() ? "UP" : "DOWN"));
+                        + " | service=" + (NpuRuntime.isAvailable() ? "UP" : "DOWN")
+                        + " | " + NpuBatchMetrics.summary()
+                        + " | " + NpuTerrainAssist.summary());
             } catch (InterruptedException ie) {
                 Thread.currentThread().interrupt();
                 return;
