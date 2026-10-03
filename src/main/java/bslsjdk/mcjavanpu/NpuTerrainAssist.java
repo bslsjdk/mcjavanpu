@@ -40,11 +40,23 @@ public final class NpuTerrainAssist {
     private static final int CACHE_CAP = 256;
     /** Requests waiting on the worker. Bounded: prefetch is an optimisation, never a backlog. */
     private static final int QUEUE_CAP = 256;
+
+    /**
+     * Hard ceiling on outstanding prefetch requests.
+     *
+     * The 9x9 experiment queued 81 chunks per request and the log showed pending=80 within seconds.
+     * That is the prefetcher competing with the loader for the same CPU: the work it schedules is
+     * the work the game is already busy doing, so "more prefetch" became "slower loading".
+     *
+     * The queue is now bounded by what can be produced, not by what can be wanted. Anything beyond
+     * the ceiling is dropped on the floor - being behind is fine, being a competitor is not.
+     */
+    private static final int MAX_IN_FLIGHT = 12;
     /**
      * Gap between submissions. This is the CPU-sharing knob: larger means the prefetcher takes
      * less of the machine while a world is loading, at the cost of a lower hit rate.
      */
-    private static final long MIN_INTERVAL_MS = 10;
+    private static final long MIN_INTERVAL_MS = 25;
 
     /** Overworld chunk shape this path serves. */
     private static final int DEF_SX = 16, DEF_SY = 384, DEF_SZ = 16;
@@ -307,7 +319,7 @@ public final class NpuTerrainAssist {
      * It is still requested as one work set and executed as many small submissions, which is the
      * only shape that fits the 16384 element budget. "Plan 81, execute in batches of 4".
      */
-    public static final int WORK_SET_SIDE = 9;
+    public static final int WORK_SET_SIDE = 3;
 
     /** Chunks currently queued or already produced, so a redraw does not queue duplicates. */
     private static final java.util.Set<Long> IN_FLIGHT =
@@ -339,6 +351,7 @@ public final class NpuTerrainAssist {
     }
 
     private static void offer(int cx, int cz, int minY) {
+        if (IN_FLIGHT.size() >= MAX_IN_FLIGHT) return;
         long k = key(cx, cz, minY);
         if (CACHE.containsKey(k) || TAKEOVER_CACHE.containsKey(k)) return;
         if (!IN_FLIGHT.add(k)) return;              // already queued by someone else
