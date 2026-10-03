@@ -39,11 +39,48 @@ public final class NpuFeaturesScreen extends Screen {
                     .bounds(cx + 60, y, 60, 20).build());
             y += 24;
         }
+        y += 8;
+        NpuConfig cfg = NpuConfig.get();
+
+        // Global switches. These decide whether the mod runs at all and whether it
+        // is allowed to back off on its own, so they belong next to the features
+        // rather than buried in a config file.
+        addRenderableWidget(Button.builder(
+                Component.literal((cfg.enabled ? "[开] " : "[关] ") + "总开关 enabled"),
+                b -> { NpuConfig.get().toggle("enabled"); this.rebuildWidgets();
+                       this.status = "enabled -> " + NpuConfig.get().enabled; })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
+        addRenderableWidget(Button.builder(
+                Component.literal((cfg.autoProbe ? "[开] " : "[关] ") + "自动探测 autoProbe"),
+                b -> { NpuConfig.get().toggle("autoProbe"); this.rebuildWidgets();
+                       this.status = "autoProbe -> " + NpuConfig.get().autoProbe
+                               + " (next launch)"; })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
+        addRenderableWidget(Button.builder(
+                Component.literal((cfg.guardEnabled ? "[开] " : "[关] ") + "自适应降级 guard"),
+                b -> { NpuConfig.get().toggle("guardEnabled"); this.rebuildWidgets();
+                       this.status = "guardEnabled -> " + NpuConfig.get().guardEnabled; })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
+        // Guard state is the one thing worth showing live: if it has tripped, the
+        // NPU is not paying for itself right now and every feature is on CPU.
+        addRenderableWidget(Button.builder(
+                Component.literal("守卫状态: " + (NpuGuard.isDegraded() ? "已降级" : "正常")),
+                b -> { NpuGuard.reset(); this.rebuildWidgets(); this.status = "guard reset"; })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
         addRenderableWidget(Button.builder(Component.literal("刷新"), b -> { this.status = NpuStats.report(); })
                 .bounds(cx - 160, y + 8, 100, 20).build());
         addRenderableWidget(Button.builder(Component.literal("返回"), b -> onClose())
                 .bounds(cx + 60, y + 8, 100, 20).build());
-        this.status = NpuStats.report().replace("\\n", "  |  ");
+        this.status = NpuStats.report().replace("\\n", "  |  ")
+                + "  ||  " + NpuGuard.summary();
     }
 
     private static String label(String key) {
