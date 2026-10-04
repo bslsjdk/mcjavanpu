@@ -67,11 +67,9 @@ public final class NpuChunkAuto {
                 SKIPPED.incrementAndGet();
                 return;
             }
-            if (!NpuServiceClient.healthy()) {
-                // Service busy or down: do not queue work we cannot deliver.
-                SKIPPED.incrementAndGet();
-                return;
-            }
+            // Do not gate the scheduler on the cached health bit. During cold start it is false
+            // until the first real request succeeds, which otherwise creates a circular dead zone:
+            // no request -> no health refresh -> no request. The bounded worker owns failure/backoff.
             int x = chunk.getPos().x();
             int z = chunk.getPos().z();
             NpuBatchManager.record(x, z);
