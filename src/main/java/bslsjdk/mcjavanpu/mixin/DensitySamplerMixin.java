@@ -110,9 +110,12 @@ public abstract class DensitySamplerMixin {
         float[] mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
         if (mine != null) {
             if (!NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
+                // Same reasoning as below: a refused write means vanilla should generate this
+                // chunk, not that the worldgen thread should die.
                 NpuStats.BLOCKS.record(0, 0, 0);
-                NpuLog.error("TERRAIN_NPU_ONLY_FAIL gate rejected prepared volume at " + cx + "," + cz, null);
-                throw new IllegalStateException("NPU terrain result rejected; vanilla fallback disabled in npu mode");
+                NpuLog.error("TERRAIN_NPU_ONLY_FAIL gate rejected prepared volume at " + cx + "," + cz
+                        + " - falling back to vanilla", null);
+                return;
             }
             int n = Math.min(buffer.size(), mine.length);
             for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
@@ -125,9 +128,20 @@ public abstract class DensitySamplerMixin {
         // Explicit NPU mode is intentionally fail-fast for testing: if the NPU result
         // is not ready, do not silently let vanilla fill this volume. That would make
         // the test indistinguishable from a successful NPU takeover.
+        // "npu" used to mean TAKEOVER: the NPU owns the whole volume, and if its result was
+        // not ready this threw and killed the worldgen thread. That is the honest definition of
+        // takeover - all NPU, no fallback - but it is not something this codebase can deliver:
+        // NpuTerrainVanilla.fill() contains no NPU call at all, so "takeover" was a CPU
+        // interpreter wearing the name, with a crash as the failure mode.
+        //
+        // What we actually have is ASSIST: the NPU contributes the part it is good at (bulk
+        // regular arithmetic - noise), and the CPU keeps everything branch- or state-dependent
+        // (spline, range_choice, cache, carvers, surface rules). A miss is therefore normal and
+        // must degrade to vanilla, never to a crash. Logging it once is how a genuinely broken
+        // pipeline still gets noticed.
         if ("npu".equalsIgnoreCase(mode)) {
-            NpuLog.error("TERRAIN_NPU_ONLY_FAIL no prepared NPU volume at " + cx + "," + cz, null);
-            throw new IllegalStateException("NPU terrain result unavailable; vanilla fallback disabled in npu mode");
+            NpuLog.error("TERRAIN_NPU_ONLY_FAIL no prepared NPU volume at " + cx + "," + cz
+                    + " - this is assist, not takeover, so falling back to vanilla", null);
         }
 
         // If the gate would refuse the result anyway, do not spend anything producing
