@@ -128,6 +128,20 @@ public final class NpuTerrainLattice {
         return Math.max(1, MAX_ELEMENTS / perChunk);
     }
 
+    /**
+     * How many chunks fill roughly {@code submissions} NPU submissions.
+     *
+     * The batch size should be chosen by row budget, not by how many whole chunks fit,
+     * because at 1225 points a single chunk already exceeds the element cap. Sizing by
+     * rows is what lets a chunk's short tail merge into the next chunk's head instead of
+     * travelling as its own round trip.
+     */
+    public static int chunksForSubmissions(int sx, int sy, int sz, int submissions) {
+        int pts = latticePoints(sx, sy, sz);
+        int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+        return Math.max(1, (submissions * rowsPerSubmit) / pts);
+    }
+
     public static int latticePoints(int sx, int sy, int sz) {
         int lx = sx / CELL_XZ + 1, lz = sz / CELL_XZ + 1, ly = sy / CELL_Y + 1;
         return lx * ly * lz;
