@@ -22,6 +22,15 @@ import java.nio.charset.StandardCharsets;
 public final class NpuServiceClient {
     private static final String HOST = "127.0.0.1";
     private static final int PORT = 38761;
+
+    /**
+     * The port this client connects to.
+     *
+     * Exposed rather than duplicated: a second hard-coded copy of the port would
+     * silently keep pointing at the old endpoint the day it changes, and the
+     * symptom would be a timeout with no reason attached.
+     */
+    public static int port() { return PORT; }
     private static final int CONNECT_TIMEOUT_MS = 1500;
     private static final int READ_TIMEOUT_MS = 8000;
 
