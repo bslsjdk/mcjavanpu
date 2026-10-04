@@ -108,6 +108,7 @@ public final class NpuGuard {
     /** Record the wall time of a completed submit(), in microseconds. */
     public static void recordUs(long micros) {
         totalCalls.incrementAndGet();
+        CONSECUTIVE_FAILS.set(0);
         if (!NpuConfig.get().guardEnabled) return;
 
         // A call that came back inside budget is evidence the path works; take that as a reason to
@@ -168,6 +169,20 @@ public final class NpuGuard {
      * caller and must not disable the NPU for everything else. Only transport and
      * availability failures count towards backing off.
      */
+    /**
+     * Consecutive failures of any kind.
+     *
+     * Cleared by every recorded success, so this counts a current streak rather than a
+     * lifetime total: a path that mostly works with the occasional bad shape is untouched,
+     * while one that is broken right now backs off after a handful of attempts.
+     */
+    private static final java.util.concurrent.atomic.AtomicInteger CONSECUTIVE_FAILS =
+            new java.util.concurrent.atomic.AtomicInteger();
+    private static final java.util.concurrent.atomic.AtomicLong consecutiveFailsDegraded =
+            new java.util.concurrent.atomic.AtomicLong();
+    /** Failures in a row before the path is treated as broken whatever the error says. */
+    private static final int FAIL_RUN_LIMIT = 6;
+
     public static void recordFailure(String why) {
         totalCalls.incrementAndGet();
         if (!NpuConfig.get().guardEnabled) return;
@@ -179,9 +194,30 @@ public final class NpuGuard {
                 || e.contains("SocketTimeout")
                 || e.contains("ConnectException")
                 || e.contains("closed");
+
+        // Repetition matters more than the error text.
+        //
+        // A native submit failure like BIN_SUBMIT_FAILED is not a transport fault, so it
+        // used to be logged and ignored. But "ignored" meant "retried", and the device log
+        // shows it firing dozens of times a second on the light path, each attempt costing
+        // hundreds of milliseconds on the game thread - the tick that measured 428 ms, long
+        // enough to feel like a hang. Classifying the error did not help; the caller kept
+        // paying for a call that cannot succeed.
+        //
+        // So a single failure of any kind is still just a log line, but a run of them is
+        // treated as the path being broken regardless of the reason. Six in a row is well
+        // past coincidence, and backing off then costs nothing that was going to work.
+        int run = CONSECUTIVE_FAILS.incrementAndGet();
         if (!transport) {
-            // Caller-side error: worth logging once, not worth disabling anything.
-            if (NpuConfig.get().debugLog) NpuLog.warn("guard: non-transport failure ignored: " + e);
+            if (run >= FAIL_RUN_LIMIT) {
+                consecutiveFailsDegraded.incrementAndGet();
+                lastProbeMs = System.currentTimeMillis();
+                degrade("repeated failure x" + run + ": " + e);
+                CONSECUTIVE_FAILS.set(0);
+                return;
+            }
+            if (NpuConfig.get().debugLog) NpuLog.warn("guard: non-transport failure ignored: " + e
+                    + " (consecutive=" + run + "/" + FAIL_RUN_LIMIT + ")");
             return;
         }
 
