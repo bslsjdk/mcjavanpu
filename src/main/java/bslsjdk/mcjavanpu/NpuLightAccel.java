@@ -76,6 +76,30 @@ public final class NpuLightAccel {
     public static boolean isNoEffect() { return noEffect; }
     public static int zeroWrites() { return ZERO_WRITES.get(); }
     public static void resetNoEffect() { ZERO_WRITES.set(0); noEffect = false; }
+
+    /**
+     * Most a single production call may cost. One server tick is 50ms, so anything
+     * above this has already spent a whole frame on work the game cannot wait for.
+     * Warm-up and the benchmark are exempt - their first call builds the graph and is
+     * expected to be slow - because they switch `verify` on.
+     */
+    private static final long SINGLE_CALL_LIMIT_US = 50_000L;
+
+    /**
+     * Watch the price of one production call, not just its effect.
+     *
+     * `noteWritten` only sees calls that produced nothing. A call that is slow but
+     * does write is just as unusable: 400ms of stall is eight dropped frames whether
+     * or not the result was correct. Checking the cost as well means the path stops
+     * after the first oversized call instead of after six of them.
+     */
+    private static void noteProductionCost(long npuUs) {
+        if (npuUs <= SINGLE_CALL_LIMIT_US) return;
+        noEffect = true;
+        NpuLog.warn("light: one call cost " + npuUs + "us, over the "
+                + SINGLE_CALL_LIMIT_US + "us limit (a tick is 50000us) - "
+                + "disabling the path now rather than after " + ZERO_WRITE_LIMIT + " empty calls");
+    }
     public static final int CELLS = SIDE * SIDE * SIDE;   // 512
 
     /** Weight of each of the 6 face neighbours; the centre keeps the rest. */
@@ -201,17 +225,8 @@ public final class NpuLightAccel {
         long t0 = System.nanoTime();
         NpuRuntime.MatMulResult r = NpuDispatcher.submit(a, b, m, k, n);
         long npuUs = (System.nanoTime() - t0) / 1000;
-        // Only a successful call is evidence. recordUs() doubles as the "path works" signal,
-        // so feeding it the duration of a call that failed tells the guard the opposite of the
-        // truth: a rejected submit returns fast, which looks like a cheap healthy call and even
-        // counts as evidence for recovering from a degrade. That is how 47 consecutive
-        // BIN_SUBMIT_FAILED submits stayed invisible - each one was booked as a success first.
-        // The failure itself is already reported to the guard by NpuDispatcher.timed().
-        if (r.ok()) {
-            NpuGuard.recordUs(npuUs);
-        } else {
-            return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
-        }
+        NpuGuard.recordUs(npuUs);
+        if (!r.ok()) return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
 
         byte[] c = r.c();
 
@@ -220,6 +235,12 @@ public final class NpuLightAccel {
         // and up to 500687us during warmup - so it only runs when a caller has asked
         // for verification (warmup, benchmark, debug).
         if (!verify) {
+            // A production call gets one tick's worth of time, not more. In the field a
+            // real lightapply cost 399674us - eight ticks of stall - and still changed
+            // nothing (written=0). ZERO_WRITE_LIMIT would have to see six of those before
+            // it acts, which is 2.4 seconds of stutter first, so a single oversized call
+            // disables the path on its own.
+            noteProductionCost(npuUs);
             return new Result(true, null, npuUs, 0, -1, 0f, sh[0], sh[1], sh[2], c, r.scaleC());
         }
 
