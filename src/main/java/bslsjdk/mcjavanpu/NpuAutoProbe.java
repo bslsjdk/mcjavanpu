@@ -109,6 +109,14 @@ public final class NpuAutoProbe {
             sb.append("\nbench sweep failed: ").append(t);
         }
 
+        // The sweep just built one graph per candidate shape. Hand production a
+        // clean cache instead of leaving our diagnostics to evict its graphs.
+        try {
+            sb.append("\nflush: ").append(NpuRuntime.flushGraphs());
+        } catch (Throwable t) {
+            sb.append("\nflush failed: ").append(t);
+        }
+
         finish(sb);
 
         // 4. Keep a readable heartbeat for long sessions.
