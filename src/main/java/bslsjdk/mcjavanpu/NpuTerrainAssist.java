@@ -183,7 +183,11 @@ public final class NpuTerrainAssist {
                 // chunks per 10 ms still leaves the prefetcher behind a fast-moving player; eight
                 // per drain lifts the ceiling to roughly 800 chunks/s of walk-ahead while keeping
                 // the CPU yield pattern the game needs.
-                int room = Math.max(1, NpuTerrainLattice.maxChunksPerSubmit(DEF_SX, DEF_SY, DEF_SZ) * 2);
+                // Sized by row budget, not by whole chunks: a chunk does not fit the element
+                // cap, so maxChunksPerSubmit is always 1 and doubling it gives a batch of two
+                // that barely helps. Four submissions' worth of rows is three chunks, and the
+                // row blocks inside generateMulti then merge the tails.
+                int room = Math.max(1, NpuTerrainLattice.chunksForSubmissions(DEF_SX, DEF_SY, DEF_SZ, 4));
                 keys = new ArrayList<>(room);
                 keys.add(firstKey);
                 while (keys.size() < room) {
