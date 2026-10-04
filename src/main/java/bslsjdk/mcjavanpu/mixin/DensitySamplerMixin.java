@@ -71,6 +71,9 @@ public abstract class DensitySamplerMixin {
     private static volatile long graceDeadlineNanos = 0L;
     private static volatile boolean graceAnnounced = false;
 
+    /** How often the wait re-probes for a service that is being restarted by the OS. */
+    private static final long PROBE_INTERVAL_NS = 500_000_000L;   // 0.5 s
+
 
     @Inject(method = "sampleVolume", at = @At("HEAD"), cancellable = true, require = 0)
     private void mcjavanpu$onSampleVolume(DensityBuffer buffer, DensityVolume volume, CallbackInfo ci) {
@@ -156,7 +159,7 @@ public abstract class DensitySamplerMixin {
             if (graceDeadlineNanos == 0L) {
                 graceDeadlineNanos = t0 + SERVICE_GRACE_NS;
             }
-            final boolean reachable = NpuServiceClient.isAvailable();
+            boolean reachable = NpuServiceClient.isAvailable();
             if (!reachable && !graceAnnounced) {
                 graceAnnounced = true;
                 NpuLog.log("takeover: MCNPU service not answering yet - waiting up to "
@@ -169,13 +172,36 @@ public abstract class DensitySamplerMixin {
             //   service answering -> short wait, the worker fills it
             //   grace not yet spent -> wait out the grace, the app may still be starting
             //   grace spent      -> no wait at all; waiting cannot produce a volume
-            final long deadline = reachable ? t0 + TAKEOVER_WAIT_NS
+            long deadline = reachable ? t0 + TAKEOVER_WAIT_NS
                     : (t0 < graceDeadlineNanos ? graceDeadlineNanos : t0);
 
+            // Re-probing inside the loop, not just once at the top.
+            //
+            // The service is a separate APK and Android kills background processes under the
+            // memory pressure a Minecraft world load creates. START_STICKY brings it back, but
+            // the restart took 2m40s in one captured run while the grace window was 30s - the
+            // service came back and we had already stopped looking.
+            //
+            // So the wait keeps asking. The moment the service answers, this chunk gets the
+            // normal short window and the terrain is produced on the NPU. Probing is throttled
+            // because isAvailableNow() opens a socket.
+            long lastProbe = t0;
             while (System.nanoTime() < deadline) {
                 mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
                 if (mine != null) break;
                 LockSupport.parkNanos(200_000L);          // 0.2 ms
+
+                if (!reachable) {
+                    long now = System.nanoTime();
+                    if (now - lastProbe >= PROBE_INTERVAL_NS) {
+                        lastProbe = now;
+                        if (NpuServiceClient.isAvailableNow() && now < graceDeadlineNanos) {
+                            reachable = true;
+                            deadline = now + TAKEOVER_WAIT_NS;
+                            NpuLog.log("takeover: MCNPU service answered - resuming NPU terrain");
+                        }
+                    }
+                }
             }
         }
 
