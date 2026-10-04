@@ -184,6 +184,8 @@ public final class NpuGuard {
     private static final int FAIL_RUN_LIMIT = 6;
 
     public static void recordFailure(String why) {
+        NpuDiagnostics.fail("guard." + (why == null ? "unknown"
+                : (why.indexOf(' ') > 0 ? why.substring(0, why.indexOf(' ')) : why)));
         totalCalls.incrementAndGet();
         if (!NpuConfig.get().guardEnabled) return;
         if (degraded) return;
@@ -230,6 +232,7 @@ public final class NpuGuard {
         reason = why;
         degradedAtMs = System.currentTimeMillis();
         degradedEvents.incrementAndGet();
+        NpuDiagnostics.count("guard.degraded");
         NpuLog.warn("guard DEGRADED: " + why + " - features fall back to CPU until it recovers");
     }
 
