@@ -70,7 +70,8 @@ public final class NpuTerrainVanilla {
                 + " eval_ms=" + (EVAL_US.get() / 1000)
                 + " per_sample_us=" + (n == 0 ? 0 : EVAL_US.get() / n)
                 + " prog_insn=" + (program == null ? -1 : program.instructions())
-                + " prog_regs=" + (program == null ? -1 : program.registers());
+                + " prog_regs=" + (program == null ? -1 : program.registers())
+                + " | " + NpuNoise.noiseShare();
     }
 
     /**
@@ -154,6 +155,9 @@ public final class NpuTerrainVanilla {
         long evUs = (System.nanoTime() - t0) / 1000;
         SAMPLES.addAndGet((long) lx * ly * lz);
         EVAL_US.addAndGet(evUs);
+        // Flush so the noise counters reflect this volume rather than whatever the last
+        // flush happened to cover - a per-chunk reading is the whole point of this probe.
+        NpuNoise.flushAll();
 
         float[] out = new float[sx * sy * sz];
         int oi = 0;
