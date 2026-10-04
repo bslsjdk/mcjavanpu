@@ -202,12 +202,9 @@ public final class NpuTerrainLattice {
             done += rows;
         }
         if (!usedNpu) {
-            note = note.isEmpty() ? "npu unavailable, host lattice" : note;
-            for (int p = 0; p < pts; p++) {
-                float sum = 0f;
-                for (int k = 0; k < K; k++) sum += a[p * K + k] * w[k];
-                lattice[p] = sum;
-            }
+            note = note.isEmpty() ? "NPU FAILED: no CPU fallback" : "NPU FAILED: " + note;
+            NpuLog.error("TERRAIN_NPU_ONLY_FAIL " + note, null);
+            return new Result(null, sx, sy, sz, pts, npuUs, 0, false, note);
         }
         long npuUs = (System.nanoTime() - t0) / 1000;
 
