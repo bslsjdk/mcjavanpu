@@ -39,7 +39,7 @@ public final class NpuRuntime {
     }
 
     public static boolean isInitialized(){return initialized;}
-    public static boolean isAvailable(){return available && NpuServiceClient.isAvailable();}
+    public static boolean isAvailable(){return available && NpuServiceClient.healthy();}
     public static String getLoadError(){return loadError;}
     public static String getDiagnostics(){return diagnostics;}
 
