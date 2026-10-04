@@ -71,7 +71,10 @@ public final class NpuTerrainVanilla {
                 + " per_sample_us=" + (n == 0 ? 0 : EVAL_US.get() / n)
                 + " prog_insn=" + (program == null ? -1 : program.instructions())
                 + " prog_regs=" + (program == null ? -1 : program.registers())
-                + " | " + NpuNoise.noiseShare();
+                + " | " + NpuNoise.noiseShare()
+                + " | assist used=" + ASSIST_USED.get()
+                + " fallback=" + ASSIST_FALLBACK.get()
+                + " | " + NpuNoiseAssist.summary();
     }
 
     /**
@@ -141,14 +144,65 @@ public final class NpuTerrainVanilla {
         long t0 = System.nanoTime();
         float[] lat = new float[lx * ly * lz];
         t.reset();
+
+        // Assist path: hoist every noise evaluation out of the program and run them as one
+        // batch, then feed the values back in. Only taken when a kernel is advertised -
+        // otherwise this whole block is skipped and the loop below is unchanged, so the
+        // default behaviour is exactly what it was.
+        float[][] noiseVals = null;
+        NpuNoiseAssist.Plan pl = null;
+        int pts = lx * ly * lz;
+        if (p != null && NpuNoiseBatch.available()) {
+            pl = NpuNoiseAssist.plan(p);
+            if (pl.usable) {
+                float[] px = new float[pts], py = new float[pts], pz = new float[pts];
+                int q = 0;
+                for (int iy = 0; iy < ly; iy++) {
+                    for (int iz = 0; iz < lz; iz++) {
+                        for (int ix = 0; ix < lx; ix++) {
+                            px[q] = ox + (float) ix * stepX;
+                            py[q] = oy + (float) iy * stepY;
+                            pz[q] = oz + (float) iz * stepZ;
+                            q++;
+                        }
+                    }
+                }
+                // The batch key carries oy alongside the seed. Two dimensions of one world
+                // differ in minY, so keying on it keeps overworld and nether lattices out
+                // of the same call - mixing them would evaluate one with the other's noise.
+                noiseVals = NpuNoiseAssist.evaluate(pl, p, seed, oy,
+                        ox >> 4, oz >> 4, oy, px, py, pz, pts);
+                if (noiseVals == null) ASSIST_FALLBACK.incrementAndGet();
+            }
+        }
+
         int li = 0;
-        for (int iy = 0; iy < ly; iy++) {
-            double wy = oy + (double) iy * stepY;
-            for (int iz = 0; iz < lz; iz++) {
-                double wz = oz + (double) iz * stepZ;
-                for (int ix = 0; ix < lx; ix++) {
-                    double wx = ox + (double) ix * stepX;
-                    lat[li++] = (float) (p != null ? p.eval(wx, wy, wz, regs) : t.get(wx, wy, wz));
+        if (noiseVals != null) {
+            float[] nv = new float[Math.max(p.theNoises().length, 8)];
+            for (int iy = 0; iy < ly; iy++) {
+                double wy = oy + (double) iy * stepY;
+                for (int iz = 0; iz < lz; iz++) {
+                    double wz = oz + (double) iz * stepZ;
+                    for (int ix = 0; ix < lx; ix++) {
+                        double wx = ox + (double) ix * stepX;
+                        for (int c = 0; c < pl.noiseIdx.length; c++) {
+                            nv[pl.noiseIdx[c]] = noiseVals[c][li];
+                        }
+                        lat[li] = (float) p.eval(wx, wy, wz, regs, nv);
+                        li++;
+                    }
+                }
+            }
+            ASSIST_USED.incrementAndGet();
+        } else {
+            for (int iy = 0; iy < ly; iy++) {
+                double wy = oy + (double) iy * stepY;
+                for (int iz = 0; iz < lz; iz++) {
+                    double wz = oz + (double) iz * stepZ;
+                    for (int ix = 0; ix < lx; ix++) {
+                        double wx = ox + (double) ix * stepX;
+                        lat[li++] = (float) (p != null ? p.eval(wx, wy, wz, regs) : t.get(wx, wy, wz));
+                    }
                 }
             }
         }
@@ -190,6 +244,11 @@ public final class NpuTerrainVanilla {
         }
         return out;
     }
+
+    private static final java.util.concurrent.atomic.AtomicLong ASSIST_USED =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong ASSIST_FALLBACK =
+            new java.util.concurrent.atomic.AtomicLong();
 
     private static float L(float[] lat, int lx, int ly, int lz, int ix, int iy, int iz) {
         if (ix >= lx) ix = lx - 1;
