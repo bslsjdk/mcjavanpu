@@ -109,8 +109,16 @@ public final class NpuParity {
 
             // Say once why we are not measuring. Silence here is the worst outcome:
             // the gate stays closed forever and nobody knows which precondition failed.
+            // Report *why* the tree is missing, not just that it is. The old message was a fixed
+            // string, so "jar unreadable", "final_density not at that path" and "the JSON used a
+            // node we do not implement" all looked identical in the log and each needed a
+            // different fix. failReason() names the one that actually happened.
             if (!NpuTerrainVanilla.ready()) {
-                noteSkipped("tree not built - final_density was never loaded");
+                String why = NpuTerrainVanilla.failReason();
+                noteSkipped("tree not built"
+                        + (why == null || why.isEmpty() ? "" : " (" + why + ")")
+                        + " - final_density was never loaded"
+                        + " | " + NpuVanillaJson.diagnose());
                 return;
             }
             if (NpuDfJson.lastUnsupported() != 0) {
