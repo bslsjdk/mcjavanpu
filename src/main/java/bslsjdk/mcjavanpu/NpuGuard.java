@@ -114,8 +114,9 @@ public final class NpuGuard {
         // recover rather than staying degraded until an arbitrary timeout. Without this, a single
         // slow cold call kept the guard degraded for the whole session.
         if (micros <= budgetUs && degraded) {
-            degraded = false;
-            reason = "";
+            // A single in-budget call is not proof the path recovered - it may be
+            // the one fast call in a slow stretch. Re-arm the window and let the
+            // median decide on the next few samples rather than trusting this one.
             synchronized (LOCK) {
                 filled = 0;
                 cursor = 0;
@@ -135,13 +136,25 @@ public final class NpuGuard {
         }
 
         // Not enough history yet to call this a trend. A single cold sample is not
-        // a p99, and tripping on it disables the feature for the whole session.
+        // a percentile, and tripping on it disables the feature for the whole session.
         if (filled < MIN_SAMPLES) return;
 
-        if (p99 > budgetUs && !degraded) {
+        // Trip on the median, not the tail.
+        //
+        // p99 over a 64-sample window is mathematically the maximum:
+        // ceil(0.99 * 64) - 1 = 63, the last sorted element. So "p99 over budget"
+        // meant "one single slow call occurred", not "the path got slower". The log
+        // shows exactly that shape - a median around 1.2 ms with occasional 79 ms
+        // and 190 ms runs - and the guard tripped on those outliers every time.
+        //
+        // The median is immune to them. One slow call is a hiccup; a slow median
+        // means the path really did regress, which is what deserves backing off.
+        long p50 = percentileLocked(0.50);
+
+        if (p50 > budgetUs && !degraded) {
             degrade(String.format(Locale.ROOT,
-                    "p99 %dus over budget %dus (n=%d)", p99, budgetUs, filled));
-        } else if (degraded && p99 <= budgetUs / 2) {
+                    "median %dus over budget %dus (n=%d, p99=%dus)", p50, budgetUs, filled, p99));
+        } else if (degraded && p50 <= budgetUs / 2) {
             // Hysteresis: recover only at half the trip level, otherwise it flaps.
             recover();
         }
