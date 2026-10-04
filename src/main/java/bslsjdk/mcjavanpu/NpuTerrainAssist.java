@@ -319,7 +319,8 @@ public final class NpuTerrainAssist {
         // now, and let the background batcher have it done before the request comes back around.
         if (!"assist".equalsIgnoreCase(cfg.chunkMode) && !"npu".equalsIgnoreCase(cfg.chunkMode)) return null;
         // See loop(): the stats flag is not a permission gate.
-        if (!NpuServiceClient.healthy()) return null;
+        // Queue first, then let the real submission establish service health. A cold service is
+        // still a valid target: the first terrain request may be the call that makes healthy=true.
 
         long k = key(cx, cz, minY);
         Prepared p = CACHE.get(k);
