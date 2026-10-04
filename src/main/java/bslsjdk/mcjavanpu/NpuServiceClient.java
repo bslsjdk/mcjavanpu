@@ -353,8 +353,35 @@ public final class NpuServiceClient {
 
     public static boolean healthy() { return healthy && !cooling(); }
 
-    /** Short probe: safe off the hot path only. Refreshes the cached flag. */
+    /**
+     * Short probe: safe off the hot path only. Refreshes the cached flag.
+     *
+     * Rate limited, because every probe is a brand new socket. The service log shows a
+     * fresh IPC ACCEPT every 5 s for the whole session, plus bursts of over a hundred in
+     * under three seconds - each one a TCP handshake and a file descriptor that has to be
+     * torn down again. Nothing about "is the service there" changes that fast, so the
+     * answer is remembered briefly and repeated callers share one probe.
+     *
+     * The window is deliberately short: long enough to collapse polling, short enough
+     * that a service which dies is noticed within about a second and a half.
+     */
+    private static final long PROBE_TTL_MS = 1500L;
+    private static volatile long probeAtMs = 0L;
+    private static volatile boolean probeValue = false;
+
     public static boolean isAvailable() {
+        if (cooling()) return false;
+        long now = System.currentTimeMillis();
+        if (now - probeAtMs < PROBE_TTL_MS) return probeValue;
+        probeAtMs = now;
+        probeValue = probe();
+        return probeValue;
+    }
+
+    /** Actually asks the service. Call this when the answer must be fresh. */
+    public static boolean isAvailableNow() { return probe(); }
+
+    private static boolean probe() {
         if (cooling()) return false;
         try {
             Socket s = new Socket();
