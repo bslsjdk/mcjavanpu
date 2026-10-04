@@ -170,6 +170,27 @@ public final class NpuNoise {
         public int octaves() { return amplitudes.length; }
 
         public double getValue(double x, double y, double z) {
+            // Measure, do not guess. Every plan for putting terrain on the NPU has to
+            // answer one question first: how much of a density evaluation is actually
+            // noise? Noise is the only part large and regular enough to be worth moving,
+            // and it is also the part that is NOT a matmul - so if the share turns out to
+            // be small the idea dies here, before anyone writes a DSP kernel.
+            //
+            // Sampled 1-in-64 and accumulated per thread: a shared counter incremented on
+            // every call would ping-pong one cache line across the worker threads and
+            // distort the very thing being measured.
+            long[] c = NOISE_TL.get();
+            long n = ++c[0];
+            if ((n & SAMPLE_MASK) != 0) return compute(x, y, z);
+            long t0 = System.nanoTime();
+            double v = compute(x, y, z);
+            c[2] += System.nanoTime() - t0;
+            c[1]++;
+            if (n >= FLUSH_AT) flush(c);
+            return v;
+        }
+
+        private double compute(double x, double y, double z) {
             double v = 0.0;
             for (int o = 0; o < amplitudes.length; o++) {
                 if (levels[o] == null || amplitudes[o] == 0.0) continue;
@@ -178,6 +199,53 @@ public final class NpuNoise {
             }
             return v / normalization;
         }
+    }
+
+    // ------------------------------------------------- noise cost measurement
+
+    private static final int SAMPLE_MASK = 63;          // time 1 in 64 calls
+    private static final long FLUSH_AT = 4096L;
+    private static final java.util.concurrent.atomic.AtomicLong NOISE_CALLS =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong NOISE_SAMPLED =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong NOISE_NS =
+            new java.util.concurrent.atomic.AtomicLong();
+
+    /** [0] calls since flush, [1] sampled count, [2] sampled nanoseconds. */
+    private static final ThreadLocal<long[]> NOISE_TL =
+            ThreadLocal.withInitial(() -> new long[3]);
+
+    private static void flush(long[] c) {
+        NOISE_CALLS.addAndGet(c[0]);
+        NOISE_SAMPLED.addAndGet(c[1]);
+        NOISE_NS.addAndGet(c[2]);
+        c[0] = 0; c[1] = 0; c[2] = 0;
+    }
+
+    /** Pulls this thread's pending counters into the totals. Cheap, safe to call often. */
+    public static void flushAll() { flush(NOISE_TL.get()); }
+
+    public static long noiseCalls() { return NOISE_CALLS.get(); }
+
+    /** Mean nanoseconds per noise channel evaluation, or -1 if nothing sampled yet. */
+    public static double noiseNsPerCall() {
+        long s = NOISE_SAMPLED.get();
+        return s == 0 ? -1.0 : NOISE_NS.get() / (double) s;
+    }
+
+    public static String noiseShare() {
+        flushAll();
+        long calls = NOISE_CALLS.get();
+        double per = noiseNsPerCall();
+        return "noise_calls=" + calls
+                + " per_call_ns=" + (per < 0 ? "?" : String.format(java.util.Locale.ROOT, "%.0f", per))
+                + " noise_us~" + (per < 0 ? "?" : (long) (calls * per / 1000.0));
+    }
+
+    public static void resetNoiseCounters() {
+        flushAll();
+        NOISE_CALLS.set(0); NOISE_SAMPLED.set(0); NOISE_NS.set(0);
     }
 
     // --------------------------------------------- vanilla channel parameters
