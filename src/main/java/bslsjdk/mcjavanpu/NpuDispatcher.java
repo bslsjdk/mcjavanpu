@@ -51,12 +51,29 @@ public final class NpuDispatcher {
         return Math.max(bucket, M_MIN);
     }
 
+    /**
+     * Total element budget across all three tensors, matching the native side.
+     *
+     * The native cap is per submission, not per dimension. Checking only that each
+     * dimension is within MM_MAX is what let 128x512x512 through: every dimension is
+     * legal, but the tensors total 128*512 + 512*512 + 128*512 = 393216 elements, six
+     * times over budget. Those calls paid for padding, an IPC round trip and a failure
+     * path every single time - 47 of them in one session, one of which stalled a tick
+     * for 428 ms.
+     */
+    public static final long MAX_TOTAL_ELEMENTS = 16384L;
+
+    public static long totalElements(int m, int k, int n) {
+        return (long) m * k + (long) k * n + (long) m * n;
+    }
+
     public static int[] planShape(int mActual, int kActual, int nActual) {
         if (mActual <= 0 || kActual <= 0 || nActual <= 0) return null;
         int m = planDimension(mActual);
         int k = planDimension(kActual);
         int n = planDimension(nActual);
         if (m == 0 || k == 0 || n == 0 || m > MM_MAX || k > MM_MAX || n > MM_MAX) return null;
+        if (totalElements(m, k, n) > MAX_TOTAL_ELEMENTS) return null;
         return new int[]{m, k, n};
     }
 
@@ -106,6 +123,16 @@ public final class NpuDispatcher {
         if (sh == null) {
             // Explicit and cheap. Previously this silently returned ERR BUF_TOO_LARGE
             // after the caller had already built and padded multi-megabyte buffers.
+            // Distinguish the two ways a shape can be refused. They need different
+            // fixes: a dimension over the cap means one tensor is too long, while a
+            // total over budget means the whole request needs splitting. Reporting
+            // only the dimension cap sent the light path looking in the wrong place.
+            int pm = planDimension(mActual), pk = planDimension(kActual), pn = planDimension(nActual);
+            if (pm > 0 && pk > 0 && pn > 0 && totalElements(pm, pk, pn) > MAX_TOTAL_ELEMENTS) {
+                return err("SHAPE_OVER_BUDGET plan=" + pm + "x" + pk + "x" + pn
+                        + " elements=" + totalElements(pm, pk, pn)
+                        + " budget=" + MAX_TOTAL_ELEMENTS + " (split the batch)");
+            }
             return err("SHAPE_UNSUPPORTED m=" + mActual + " k=" + kActual + " n=" + nActual
                     + " (native max " + MM_MAX + "; split the batch)");
         }
