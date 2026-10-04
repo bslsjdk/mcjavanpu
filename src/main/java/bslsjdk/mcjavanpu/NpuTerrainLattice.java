@@ -364,35 +364,73 @@ public final class NpuTerrainLattice {
         return out;
     }
 
+    /**
+     * fy for each offset inside one y cell.
+     *
+     * A cell is CELL_Y voxels tall, and every voxel in it shares the same two lattice
+     * planes - only the fraction changes. So the eight corner fetches and the x/z parts of
+     * the interpolation are identical for all CELL_Y of them, and the only thing that
+     * varies is this fraction. Precomputing it turns the inner loop into a single
+     * multiply-add per output voxel.
+     */
+    private static final float[] FY = new float[CELL_Y];
+    static {
+        for (int i = 0; i < CELL_Y; i++) FY[i] = i / (float) CELL_Y;
+    }
+
     /** Trilinear fill in MC buffer order (z, x, y). Shared by both entry points. */
     private static float[] interpolate(float[] lattice, int lx, int ly, int lz,
                                        int sx, int sy, int sz) {
         float[] out = new float[sx * sy * sz];
         int oi = 0;
+        // lattice[(iy * lz + iz) * lx + ix], so a step in y moves a whole z*x plane.
+        final int strideY = lz * lx;
         for (int z = 0; z < sz; z++) {
             int iz = z / CELL_XZ;
             float fz = (z % CELL_XZ) / (float) CELL_XZ;
+            int iz1 = iz + 1 < lz ? iz + 1 : lz - 1;
             for (int x = 0; x < sx; x++) {
                 int ix = x / CELL_XZ;
                 float fx = (x % CELL_XZ) / (float) CELL_XZ;
-                for (int y = 0; y < sy; y++) {
+                int ix1 = ix + 1 < lx ? ix + 1 : lx - 1;
+
+                // The four (x,z) corner offsets within a plane. Both y planes reuse them,
+                // and they are constant across the whole column below.
+                final int b00 = iz * lx + ix;    // iy  , iz
+                final int b10 = iz * lx + ix1;   // iy  , iz
+                final int b01 = iz1 * lx + ix;   // iy  , iz+1
+                final int b11 = iz1 * lx + ix1;  // iy  , iz+1
+
+                // Walk y a cell at a time. Inside one cell the eight corners do not move.
+                for (int y = 0; y < sy; y += CELL_Y) {
                     int iy = y / CELL_Y;
-                    float fy = (y % CELL_Y) / (float) CELL_Y;
-                    float v000 = L(lattice, lx, ly, lz, ix, iy, iz);
-                    float v100 = L(lattice, lx, ly, lz, ix + 1, iy, iz);
-                    float v010 = L(lattice, lx, ly, lz, ix, iy + 1, iz);
-                    float v110 = L(lattice, lx, ly, lz, ix + 1, iy + 1, iz);
-                    float v001 = L(lattice, lx, ly, lz, ix, iy, iz + 1);
-                    float v101 = L(lattice, lx, ly, lz, ix + 1, iy, iz + 1);
-                    float v011 = L(lattice, lx, ly, lz, ix, iy + 1, iz + 1);
-                    float v111 = L(lattice, lx, ly, lz, ix + 1, iy + 1, iz + 1);
+                    int iy1 = iy + 1 < ly ? iy + 1 : ly - 1;
+                    final int p0 = iy * strideY;
+                    final int p1 = iy1 * strideY;
+
+                    float v000 = lattice[p0 + b00];
+                    float v100 = lattice[p0 + b10];
+                    float v010 = lattice[p1 + b00];
+                    float v110 = lattice[p1 + b10];
+                    float v001 = lattice[p0 + b01];
+                    float v101 = lattice[p0 + b11];
+                    float v011 = lattice[p1 + b01];
+                    float v111 = lattice[p1 + b11];
+
+                    // x, then the y pairs. Identical arithmetic to the straightforward
+                    // per-voxel form, just hoisted out of the loop.
                     float x00 = v000 + fx * (v100 - v000);
                     float x10 = v010 + fx * (v110 - v010);
                     float x01 = v001 + fx * (v101 - v001);
                     float x11 = v011 + fx * (v111 - v011);
-                    float y0 = x00 + fy * (x10 - x00);
-                    float y1 = x01 + fy * (x11 - x01);
-                    out[oi++] = y0 + fz * (y1 - y0);
+
+                    int count = Math.min(CELL_Y, sy - y);
+                    for (int dy = 0; dy < count; dy++) {
+                        float fy = FY[dy];
+                        float y0 = x00 + fy * (x10 - x00);
+                        float y1 = x01 + fy * (x11 - x01);
+                        out[oi++] = y0 + fz * (y1 - y0);
+                    }
                 }
             }
         }
