@@ -34,6 +34,20 @@ public final class NpuGuard {
     private static final Object LOCK = new Object();
 
     /**
+     * Samples needed before the guard is allowed to trip.
+     *
+     * With a window of one, the first sample IS the p99, so a single cold call
+     * decided the session. Log evidence: p99 161370us (161 ms) against an 8 ms
+     * budget, tripped on the first observation after warm-up, and never recovered -
+     * every later request was rejected, so no new sample could ever improve the
+     * window. The result was 8231 requests submitted, 0 processed, service up.
+     *
+     * Requiring a real sample set means one outlier is diluted by the calls around
+     * it instead of defining them.
+     */
+    private static final int MIN_SAMPLES = 8;
+
+    /**
      * Samples are ignored until this many calls have been seen.
      *
      * The first calls build the graphs for a shape and measured ~17 ms against an 8 ms budget. With
@@ -53,6 +67,8 @@ public final class NpuGuard {
     private static volatile long degradedAtMs;
     private static volatile long lastProbeMs;
     private static final long PROBE_INTERVAL_MS = 15_000L;
+    /** Absolute backstop: never remain degraded longer than this without retrying. */
+    private static final long FORCED_RETRY_MS = 60_000L;
 
     public static final AtomicLong totalCalls = new AtomicLong();
     public static final AtomicLong rejectedCalls = new AtomicLong();
@@ -73,6 +89,16 @@ public final class NpuGuard {
         long now = System.currentTimeMillis();
         if (now - lastProbeMs >= PROBE_INTERVAL_MS) {
             lastProbeMs = now;
+            return true;
+        }
+        // Last resort: never stay degraded forever. If the window has been unable
+        // to refill for a long time - because most calls are being rejected, so
+        // few samples arrive - clear it and take another look. Without this a trip
+        // caused by stale samples can never be undone.
+        if (now - degradedAtMs > FORCED_RETRY_MS) {
+            degradedAtMs = now;
+            lastProbeMs = now;
+            synchronized (LOCK) { filled = 0; cursor = 0; }
             return true;
         }
         rejectedCalls.incrementAndGet();
@@ -108,9 +134,13 @@ public final class NpuGuard {
             p99 = percentileLocked(0.99);
         }
 
+        // Not enough history yet to call this a trend. A single cold sample is not
+        // a p99, and tripping on it disables the feature for the whole session.
+        if (filled < MIN_SAMPLES) return;
+
         if (p99 > budgetUs && !degraded) {
             degrade(String.format(Locale.ROOT,
-                    "p99 %dus over budget %dus", p99, budgetUs));
+                    "p99 %dus over budget %dus (n=%d)", p99, budgetUs, filled));
         } else if (degraded && p99 <= budgetUs / 2) {
             // Hysteresis: recover only at half the trip level, otherwise it flaps.
             recover();
