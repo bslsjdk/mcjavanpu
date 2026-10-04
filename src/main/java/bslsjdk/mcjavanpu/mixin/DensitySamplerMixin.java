@@ -111,7 +111,8 @@ public abstract class DensitySamplerMixin {
         if (mine != null) {
             if (!NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
                 NpuStats.BLOCKS.record(0, 0, 0);
-                return;
+                NpuLog.error("TERRAIN_NPU_ONLY_FAIL gate rejected prepared volume at " + cx + "," + cz, null);
+                throw new IllegalStateException("NPU terrain result rejected; vanilla fallback disabled in npu mode");
             }
             int n = Math.min(buffer.size(), mine.length);
             for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
@@ -119,6 +120,14 @@ public abstract class DensitySamplerMixin {
             NpuStats.BLOCKS.record(n, 0, 0);
             ci.cancel();
             return;
+        }
+
+        // Explicit NPU mode is intentionally fail-fast for testing: if the NPU result
+        // is not ready, do not silently let vanilla fill this volume. That would make
+        // the test indistinguishable from a successful NPU takeover.
+        if ("npu".equalsIgnoreCase(mode)) {
+            NpuLog.error("TERRAIN_NPU_ONLY_FAIL no prepared NPU volume at " + cx + "," + cz, null);
+            throw new IllegalStateException("NPU terrain result unavailable; vanilla fallback disabled in npu mode");
         }
 
         // If the gate would refuse the result anyway, do not spend anything producing
