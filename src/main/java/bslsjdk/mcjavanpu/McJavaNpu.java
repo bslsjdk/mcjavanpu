@@ -731,7 +731,10 @@ public final class McJavaNpu implements ModInitializer {
             int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
             int cx = bx >> 4, cz = bz >> 4;
             int side = radius * 2 + 1;
-            NpuTerrainAssist.requestWorkSet(cx, cz, 16, 384, 16, -64);
+            // Pass the radius through. It used to be computed for the message and then not
+            // given to the work set, so the reported "planned=81" described a request that
+            // was never made.
+            NpuTerrainAssist.requestWorkSet(cx, cz, 16, 384, 16, -64, side);
             final String line = "[NPU] terrain test queued center=" + cx + "," + cz
                     + " radius=" + radius + " planned=" + (side * side)
                     + " || " + NpuTerrainAssist.summary();
