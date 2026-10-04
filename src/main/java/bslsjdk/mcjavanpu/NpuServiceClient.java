@@ -277,9 +277,9 @@ public final class NpuServiceClient {
             MatMulResult r = submitBinMatMul8Locked(A, B, m, k, n, total0);
         // Counted here, on the transport, not in the scheduler: this is the only place that
         // can distinguish "a chunk was queued" from "a request actually went out".
+        long wallNs = System.nanoTime() - total0;
         NpuDiagnostics.count("transport.submits");
-        NpuDiagnostics.time("transport", (System.nanoTime() - total0) * 1000L < 0
-                ? 0 : System.nanoTime() - total0);
+        if (wallNs > 0) NpuDiagnostics.time("transport", wallNs);
         if (r == null || r.error() != null) {
             NpuDiagnostics.fail("transport");
             String e = r == null ? "NULL_RESULT" : r.error();
