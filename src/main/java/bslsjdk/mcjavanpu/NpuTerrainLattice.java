@@ -325,20 +325,15 @@ public final class NpuTerrainLattice {
             NpuRuntime.MatMulResult r = NpuDispatcher.submit(ab, bb, n * pts, K, 1);
             totalNpu += (System.nanoTime() - t0) / 1000;
 
-            if (r.ok() && r.c() != null) {
+            if (r.ok() && r.c() != null && r.c().length >= n * pts) {
                 float scale = r.scaleC();
                 if (scale == 0f) scale = SA * SA;
                 byte[] c = r.c();
                 for (int p = 0; p < n * pts; p++) latticeAll[start * pts + p] = c[p] * scale;
             } else {
-                for (int ci = 0; ci < n; ci++) {
-                    for (int p = 0; p < pts; p++) {
-                        float sum = 0f;
-                        int base = ((ci * pts) + p) * K;
-                        for (int k = 0; k < K; k++) sum += feat[base + k] * w[k];
-                        latticeAll[(start + ci) * pts + p] = sum;
-                    }
-                }
+                String why = r.ok() ? "short NPU result" : "NPU submit failed";
+                NpuLog.error("TERRAIN_NPU_ONLY_FAIL batch start=" + start + " count=" + n + " reason=" + why, null);
+                return null;
             }
         }
 
