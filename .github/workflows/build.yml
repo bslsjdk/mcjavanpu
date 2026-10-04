@@ -33,3 +33,4 @@ jobs:
           name: mcjavanpu
           path: |
             build/libs/*.jar
+          retention-days: 3
