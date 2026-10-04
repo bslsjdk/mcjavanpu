@@ -115,7 +115,7 @@ public final class NpuFeaturesScreen extends Screen {
             String cmd;
             switch (f.key) {
                 case "light": cmd = "npu lightapply 1"; break;
-                case "chunk": cmd = "npu lightfold 1"; break;
+                case "chunk": cmd = "npu terrain 1"; break;
                 case "noise": cmd = "npu noise 512"; break;
                 default: cmd = "npu submit 256"; break;
             }
