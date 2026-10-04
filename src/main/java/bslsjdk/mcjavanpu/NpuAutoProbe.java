@@ -65,6 +65,16 @@ public final class NpuAutoProbe {
 
         StringBuilder sb = new StringBuilder("==== NPU auto probe ====");
 
+        // 0. In-process route, before anything about the service. It is a different
+        //    question - can this process reach the NPU directly? - and it deserves to be
+        //    answered first because if it works, the ~12 ms cross-process path below is
+        //    no longer the ceiling we are measuring against.
+        try {
+            sb.append("\ninprocess: ").append(NpuInProcessProbe.run());
+        } catch (Throwable t) {
+            sb.append("\ninprocess probe threw: ").append(t);
+        }
+
         // 1. Service reachability, and the reason when it is not.
         boolean up = NpuRuntime.isAvailable();
         sb.append("\nservice: ").append(up ? "UP" : "DOWN");
