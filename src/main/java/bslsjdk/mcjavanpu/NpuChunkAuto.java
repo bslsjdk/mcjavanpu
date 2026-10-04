@@ -135,6 +135,9 @@ public final class NpuChunkAuto {
         // that answers "is it degraded, is the service up, is anything even happening".
         if (++heartbeatTicks >= 1200) {
             heartbeatTicks = 0;
+            // The verdict goes into the heartbeat so the log says what is wrong on its
+            // own, instead of leaving a wall of counters for someone to interpret.
+            NpuLog.log("diag | " + NpuDiagnostics.verdict());
             NpuLog.log("heartbeat | " + summary() + " | guard="
                     + (NpuGuard.isDegraded() ? "DEGRADED(" + NpuGuard.reason() + ")" : "ok")
                     + " | service=" + (NpuServiceClient.healthy() ? "UP" : "DOWN")
