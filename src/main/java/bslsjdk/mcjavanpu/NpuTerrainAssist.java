@@ -409,6 +409,9 @@ public final class NpuTerrainAssist {
      * only shape that fits the 16384 element budget. "Plan 81, execute in batches of 4".
      */
     public static final int WORK_SET_SIDE = 3;
+    /** Ceiling for an explicitly requested work set. Planning wide is fine; queuing 81 chunks
+     *  at once starved the load thread when 9x9 was tried. */
+    public static final int MAX_WORK_SET_SIDE = 9;
 
     /** Chunks currently queued or already produced, so a redraw does not queue duplicates. */
     private static final java.util.Set<Long> IN_FLIGHT =
@@ -422,7 +425,20 @@ public final class NpuTerrainAssist {
      * is biased along the direction of travel when the caller knows it, otherwise the ring order
      * still gives a usable near-first result.
      */
+    /** Delegates to {@link #requestWorkSet(int, int, int, int, int, int, int)} at the default size. */
     public static void requestWorkSet(int cx, int cz, int sx, int sy, int sz, int minY) {
+        requestWorkSet(cx, cz, sx, sy, sz, minY, WORK_SET_SIDE);
+    }
+
+    /**
+     * Submit a whole work set centred on one chunk, {@code side} chunks across.
+     *
+     * The side is a parameter rather than a constant because a caller that asks for a radius
+     * should get that radius. The command path reported "planned=81" for radius=4 while this
+     * method quietly queued the fixed 3x3 set, which makes a test button lie about its own
+     * scope - the worst kind of wrong, because the number looks plausible either way.
+     */
+    public static void requestWorkSet(int cx, int cz, int sx, int sy, int sz, int minY, int side) {
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return;
         // 81 chunks of density evaluation per call, all of it discarded if the
@@ -430,7 +446,10 @@ public final class NpuTerrainAssist {
         if (!NpuTerrainGate.worthComputing()) { SKIPPED_GATE.incrementAndGet(); return; }
         if (!workerStarted) ensureWorker();
 
-        int half = WORK_SET_SIDE / 2;
+        // Cap rather than trust: a large work set starves the load thread, which is why 9x9
+        // was abandoned in favour of "plan wide, execute in small batches".
+        int eff = Math.max(1, Math.min(side, MAX_WORK_SET_SIDE));
+        int half = eff / 2;
         for (int ring = 0; ring <= half; ring++) {
             for (int dz = -ring; dz <= ring; dz++) {
                 for (int dx = -ring; dx <= ring; dx++) {
