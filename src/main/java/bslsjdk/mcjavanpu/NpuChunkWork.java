@@ -111,6 +111,14 @@ public final class NpuChunkWork {
 
         ServerLevel level = lastLevel;
         if (level == null) return false;
+        // Chunk work is queued across ticks. A chunk can unload before its turn arrives;
+        // do not spend JNI/IPC/NPU time on stale coordinates. This keeps backlog pressure
+        // from turning into work on data the player can no longer see.
+        try {
+            if (!level.hasChunk(cx, cz)) return false;
+        } catch (Throwable ignored) {
+            // Compatibility fallback: if this mapping lacks hasChunk(), keep the old safe path.
+        }
 
         Object layer = null;
         Object engine = null;
