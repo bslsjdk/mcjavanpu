@@ -717,6 +717,35 @@ public final class McJavaNpu implements ModInitializer {
         return 0;
     }
 
+    /**
+     * Terrain smoke test: enqueue a small real terrain work set without blocking the game thread.
+     * This tests the actual chunk-generation entry path, not the unrelated lightfold operator.
+     */
+    private static int runTerrainTest(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int radius) {
+        try {
+            Object level = context.getSource().getLevel();
+            Object pos = context.getSource().getPosition();
+            Class<?> pc = pos.getClass();
+            int bx = (int) Math.floor(((Number) pc.getField("x").get(pos)).doubleValue());
+            int by = (int) Math.floor(((Number) pc.getField("y").get(pos)).doubleValue());
+            int bz = (int) Math.floor(((Number) pc.getField("z").get(pos)).doubleValue());
+            int cx = bx >> 4, cz = bz >> 4;
+            int side = radius * 2 + 1;
+            NpuTerrainAssist.requestWorkSet(cx, cz, 16, 384, 16, -64);
+            final String line = "[NPU] terrain test queued center=" + cx + "," + cz
+                    + " radius=" + radius + " planned=" + (side * side)
+                    + " || " + NpuTerrainAssist.summary();
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            NpuLog.log(line);
+            return 1;
+        } catch (Throwable t) {
+            final String line = "[NPU] terrain test FAIL " + t.getClass().getSimpleName() + ": " + t.getMessage();
+            context.getSource().sendSuccess(() -> Component.literal(line), false);
+            NpuLog.error(line, t);
+            return 0;
+        }
+    }
+
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
                 .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
@@ -783,6 +812,11 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "m"),
                                                         IntegerArgumentType.getInteger(context, "k"),
                                                         IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("terrain")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> runTerrainTest(context, 1))
+                        .then(Commands.argument("radius", IntegerArgumentType.integer(0, 4))
+                                .executes(context -> runTerrainTest(context, IntegerArgumentType.getInteger(context, "radius")))))
                 .then(Commands.literal("light")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         // Batched light propagation: N blocks of 8x8x8 voxels in ONE NPU call.
