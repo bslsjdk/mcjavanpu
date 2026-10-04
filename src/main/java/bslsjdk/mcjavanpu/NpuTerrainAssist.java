@@ -57,6 +57,12 @@ public final class NpuTerrainAssist {
      * less of the machine while a world is loading, at the cost of a lower hit rate.
      */
     private static final long MIN_INTERVAL_MS = 25;
+    /**
+     * Sleep while there is a backlog. Not zero: the worker still has to let the game
+     * thread run, but 1 ms instead of 25 ms is the difference between keeping up and
+     * never catching up.
+     */
+    private static final long BUSY_YIELD_MS = 1;
 
     /** Overworld chunk shape this path serves. */
     private static final int DEF_SX = 16, DEF_SY = 384, DEF_SZ = 16;
@@ -186,8 +192,24 @@ public final class NpuTerrainAssist {
                     keys.add(REQUESTED.take());
                 }
 
-                // Yield to the game before doing the work, not after.
-                Thread.sleep(MIN_INTERVAL_MS);
+                // Yield to the game before doing the work, not after - but only when
+                // there is actually slack to give.
+                //
+                // The old code slept MIN_INTERVAL_MS unconditionally, which capped
+                // throughput at one batch per 25 ms no matter how far behind we were.
+                // A player moving through new terrain queues far faster than that, so
+                // the prefetcher could never catch up and the hit rate stayed at zero.
+                //
+                // Now the sleep is a function of backlog: when chunks are piling up we
+                // run flat out (the thread is MIN_PRIORITY, so the scheduler still
+                // favours the game), and only when the queue is nearly idle do we hand
+                // the CPU back. Being behind is not a reason to slow down further.
+                int backlog = REQUESTED.size();
+                if (backlog >= room) {
+                    Thread.sleep(BUSY_YIELD_MS);
+                } else {
+                    Thread.sleep(MIN_INTERVAL_MS);
+                }
 
                 int n = keys.size();
                 int[] cxs = new int[n], czs = new int[n], oys = new int[n];
@@ -237,9 +259,16 @@ public final class NpuTerrainAssist {
 
                 for (int i = 0; i < n; i++) {
                     CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
+                    if (!CACHE_ORDER.offer(keys.get(i))) CACHE_ORDER.poll();
                     IN_FLIGHT.remove(keys.get(i));
                 }
-                if (CACHE.size() > CACHE_CAP * 2) CACHE.clear();
+                // Evict the oldest rather than dropping everything.
+                //
+                // Clearing on overflow throws away precisely the chunks most likely to
+                // be needed next - the ones just prepared around the player - and the
+                // hit rate collapses right when it matters. A volume is ~393 KB as
+                // floats, so the cache is trimmed while still holding a useful window.
+                trimCache();
                 BUILT.addAndGet(n);
                 // What the scheduler claims to have handled. Paired with the submit
                 // counter at the transport, this is how we tell a real batch from a
@@ -316,6 +345,18 @@ public final class NpuTerrainAssist {
     public static String takeoverSummary() {
         return "takeover_cache=" + TAKEOVER_CACHE.size() + "/" + TAKEOVER_CAP
                 + " batches=" + TAKEOVER_BATCHES.get() + " served=" + TAKEOVER_SERVED.get();
+    }
+
+    /** Insertion order for CACHE, so trimming can drop the oldest entry. */
+    private static final java.util.concurrent.ArrayBlockingQueue<Long> CACHE_ORDER =
+            new java.util.concurrent.ArrayBlockingQueue<>(CACHE_CAP * 2 + 64);
+
+    private static void trimCache() {
+        while (CACHE.size() > CACHE_CAP) {
+            Long oldest = CACHE_ORDER.poll();
+            if (oldest == null) break;
+            CACHE.remove(oldest);
+        }
     }
 
     public static float[] take(int cx, int cz, int sx, int sy, int sz, int minY) {
@@ -438,6 +479,7 @@ public final class NpuTerrainAssist {
 
     public static void clear() {
         CACHE.clear();
+        CACHE_ORDER.clear();
         REQUESTED.clear();
         IN_FLIGHT.clear();
     }
