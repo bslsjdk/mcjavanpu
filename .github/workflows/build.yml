@@ -5,6 +5,10 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+  issues: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -27,11 +31,31 @@ jobs:
       - name: Build Fabric mod
         run: gradle build --no-daemon
 
+      # The account's Actions storage quota is exhausted for this billing cycle and the
+      # metered usage does not go back down when artifacts are deleted, so this upload is
+      # expected to fail until the cycle resets. It stays - it is the normal delivery route
+      # once the quota returns - but it must not turn a green build red.
       - name: Upload mod
         uses: actions/upload-artifact@v4
+        continue-on-error: true
         with:
           name: mcjavanpu
           path: |
             build/libs/*.jar
           overwrite: true
           retention-days: 3
+
+      # Deliver the jar through git instead, which does not draw on Actions storage.
+      # One file, force-pushed, so the branch never grows a history of old builds.
+      - name: Publish jar to the builds branch
+        run: |
+          set -eux
+          JAR=$(ls build/libs/*.jar | head -1)
+          test -f "$JAR"
+          git config user.name ci
+          git config user.email ci@local
+          git checkout -B builds
+          cp "$JAR" mcjavanpu.jar
+          git add -f mcjavanpu.jar
+          git commit -m "mcjavanpu build of ${GITHUB_SHA}" || echo "jar unchanged"
+          git push -f origin builds
