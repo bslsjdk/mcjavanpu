@@ -57,10 +57,45 @@ public final class NpuVanillaJson {
         return read("data/minecraft/worldgen/noise/" + name + ".json");
     }
 
-    /** Shorthand for an overworld density function file. */
+    /** Where the last successfully read density function actually lived, for diagnostics. */
+    private static volatile String lastHitPath = "";
+
+    /**
+     * Shorthand for an overworld density function file.
+     *
+     * Two paths are tried because Mojang moved the overworld-only functions into an
+     * "overworld/" sub-directory in a later data-driven refactor. Guessing one and being wrong
+     * is silent: the file simply reads back as missing and the density tree never builds, with
+     * nothing in the log saying which layout this jar uses. Trying both costs one extra
+     * getEntry call on the miss path, and lastHitPath records which one this build uses.
+     */
     public static String densityFunction(String name) {
-        return read("data/minecraft/worldgen/density_function/overworld/" + name + ".json");
+        String sub = "data/minecraft/worldgen/density_function/overworld/" + name + ".json";
+        String s = read(sub);
+        if (s != null && !s.isEmpty()) { lastHitPath = sub; return s; }
+        String flat = "data/minecraft/worldgen/density_function/" + name + ".json";
+        s = read(flat);
+        if (s != null && !s.isEmpty()) { lastHitPath = flat; return s; }
+        lastHitPath = "";
+        return null;
     }
 
     public static boolean available() { return jar() != null; }
+
+    /**
+     * One line naming the jar and the layout, so a parity failure can be attributed without
+     * re-reading the code. Cheap: the jar is opened once and cached.
+     */
+    public static String diagnose() {
+        ZipFile z = jar();
+        if (z == null) return "jar=" + jarPath;
+        return "jar=" + jarPath + " density_layout=" + (lastHitPath.isEmpty() ? "unknown" : lastHitPath);
+    }
+
+    /** True when the jar has an entry at this exact path. Probe helper for startup logging. */
+    public static boolean has(String path) {
+        ZipFile z = jar();
+        if (z == null) return false;
+        return z.getEntry(path) != null;
+    }
 }
