@@ -911,6 +911,21 @@ public final class McJavaNpu implements ModInitializer {
                                     context.getSource().sendSuccess(() -> Component.literal(l), false);
                                     return 1;
                                 })))
+                .then(Commands.literal("diag")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        .executes(context -> {
+                            final String l = "[NPU] diag\n" + NpuDiagnostics.report();
+                            context.getSource().sendSuccess(() -> Component.literal(l), false);
+                            NpuLog.log("[NPU] diag\n" + NpuDiagnostics.report());
+                            return 1;
+                        })
+                        .then(Commands.literal("reset")
+                                .executes(context -> {
+                                    NpuDiagnostics.reset();
+                                    context.getSource().sendSuccess(
+                                            () -> Component.literal("[NPU] diagnostics cleared"), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("preload")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> {
