@@ -34,7 +34,10 @@ public final class NpuTerrainGate {
 
     private NpuTerrainGate() {}
 
-    public static boolean isTakeoverAllowed() { return takeoverAllowed; }
+    public static boolean isTakeoverAllowed() {
+        NpuConfig cfg = NpuConfig.get();
+        return takeoverAllowed || (cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode));
+    }
 
     public static void setTakeoverAllowed(boolean v) {
         takeoverAllowed = v;
@@ -62,8 +65,8 @@ public final class NpuTerrainGate {
      * nothing until someone proves the interpreter matches vanilla and opens it.
      */
     public static boolean worthComputing() {
-        if (!takeoverAllowed) return false;
         NpuConfig cfg = NpuConfig.get();
+        if (!takeoverAllowed && (cfg == null || !"npu".equalsIgnoreCase(cfg.chunkMode))) return false;
         // Explicit npu mode is the experimental HTP terrain path. It intentionally
         // does not wait for the CPU parity interpreter to be built.
         if (cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode)) return true;
@@ -79,14 +82,14 @@ public final class NpuTerrainGate {
     public static boolean allowWrite(int cx, int cz, float[] volume, int expectedSize) {
         CHECKED.incrementAndGet();
 
-        if (!takeoverAllowed) return refuse("gate closed (correctness unproven)");
+        NpuConfig cfg = NpuConfig.get();
+        boolean npuMode = cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode);
+        if (!takeoverAllowed && !npuMode) return refuse("gate closed (correctness unproven)");
         if (volume == null) return refuse("volume null");
         if (expectedSize > 0 && volume.length < expectedSize) {
             return refuse("short volume " + volume.length + "<" + expectedSize);
         }
 
-        NpuConfig cfg = NpuConfig.get();
-        boolean npuMode = cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode);
         // npu mode deliberately does not claim vanilla parity. Its result is produced by
         // the experimental HTP lattice generator, so the parity tree is not a prerequisite.
         if (!npuMode) {
