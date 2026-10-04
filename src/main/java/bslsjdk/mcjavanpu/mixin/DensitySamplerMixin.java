@@ -1,5 +1,6 @@
 package bslsjdk.mcjavanpu.mixin;
 
+import bslsjdk.mcjavanpu.NpuChunkWork;
 import bslsjdk.mcjavanpu.NpuConfig;
 import bslsjdk.mcjavanpu.NpuParity;
 import bslsjdk.mcjavanpu.NpuLog;
@@ -9,6 +10,7 @@ import bslsjdk.mcjavanpu.NpuTerrainLattice;
 import bslsjdk.mcjavanpu.NpuTerrainGen;
 import bslsjdk.mcjavanpu.NpuTerrainGate;
 import bslsjdk.mcjavanpu.NpuTerrainHook;
+import bslsjdk.mcjavanpu.NpuTerrainLock;
 import net.minecraft.world.level.levelgen.densityfunction.DensityBuffer;
 import net.minecraft.world.level.levelgen.densityfunction.DensityVolume;
 import org.spongepowered.asm.mixin.Mixin;
@@ -41,6 +43,16 @@ public abstract class DensitySamplerMixin {
      */
     private static final int BATCH_SIDE = 2;
 
+    /**
+     * How long locked takeover waits for its volume before declaring a miss.
+     *
+     * Generous on purpose: this mode exists to measure the NPU path, and a timeout that fires
+     * early would turn a slow-but-working pipeline into a row of holes. Blocking worldgen for
+     * this long is unacceptable for play and acceptable for a benchmark, which is why it only
+     * applies when the world is locked to takeover.
+     */
+    private static final long TAKEOVER_WAIT_NS = 8_000_000_000L;
+
 
     @Inject(method = "sampleVolume", at = @At("HEAD"), cancellable = true, require = 0)
     private void mcjavanpu$onSampleVolume(DensityBuffer buffer, DensityVolume volume, CallbackInfo ci) {
@@ -54,7 +66,9 @@ public abstract class DensitySamplerMixin {
 
         if (!NpuConfig.get().enabled) return;
 
-        final String mode = NpuConfig.get().chunkMode;
+        // The mode is frozen per world, not read live. A benchmark where the generator can
+        // change halfway through measures nothing.
+        final String mode = NpuTerrainLock.acquire(NpuChunkWork.worldSeed());
         final boolean takeover = "npu".equalsIgnoreCase(mode);
         final boolean assist = "assist".equalsIgnoreCase(mode);
         if (!takeover && !assist) return;
@@ -94,29 +108,53 @@ public abstract class DensitySamplerMixin {
             return;
         }
 
-        // Takeover, done the only way it can be done without stuttering.
+        // Locked takeover: this world is produced by ONE path from the first chunk to the last.
         //
-        // The previous version generated the chunk inline. That was wrong, and the symptom was
-        // exactly what the player reported: a hitch every time new terrain appeared. One inline
-        // submission costs ~50 ms of fixed overhead (IPC + graph lookup + QNN dispatch) and that
-        // was being paid on the game thread, per chunk, in the middle of world generation.
+        // The old rule was "the game thread never waits for the NPU". That is correct for an
+        // assist - a miss must degrade to vanilla rather than stutter - but it makes measurement
+        // impossible, because a miss hands the chunk to vanilla and the world ends up half one
+        // generator and half the other. No timing can then be attributed to either.
         //
-        // The rule is now absolute: the game thread never waits for the NPU. Look in the cache
-        // first - if the background batcher already produced this volume, take it, and vanilla
-        // never runs for this chunk (that is the "takeover" part). If it is not there yet, hand
-        // the request to the background queue and fall through to vanilla. The next time this
-        // terrain is touched the volume will be waiting, and by then the batcher has also done
-        // the neighbours and the walk-ahead, so the hit rate rises as the player moves.
+        // So takeover waits, and when nothing arrives it writes a visible sentinel rather than
+        // falling back. The point is that a failure looks like a failure: holes in the world,
+        // counted and logged. Vanilla terrain mixed in would look like success and measure as
+        // noise.
         float[] mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
-        if (mine != null) {
-            if (!NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
-                // Same reasoning as below: a refused write means vanilla should generate this
-                // chunk, not that the worldgen thread should die.
-                NpuStats.BLOCKS.record(0, 0, 0);
-                NpuLog.error("TERRAIN_NPU_ONLY_FAIL gate rejected prepared volume at " + cx + "," + cz
-                        + " - falling back to vanilla", null);
-                return;
+
+        if (mine == null && !NpuTerrainGate.worthComputing()) {
+            // The pipeline will not produce anything at all, so waiting would only stall for
+            // the full timeout and end up here anyway.
+            fillMissing(buffer);
+            NpuTerrainLock.recordFailure("pipeline refused to compute: " + NpuTerrainGate.lastReason());
+            NpuStats.BLOCKS.record(0, 0, 0);
+            ci.cancel();
+            return;
+        }
+
+        if (mine == null) {
+            NpuTerrainAssist.requestWorkSet(cx, cz, sx, sy, sz, oy);
+            long deadline = System.nanoTime() + TAKEOVER_WAIT_NS;
+            while (System.nanoTime() < deadline) {
+                mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
+                if (mine != null) break;
+                try {
+                    Thread.sleep(0, 200_000);            // 0.2 ms
+                } catch (InterruptedException ie) {
+                    Thread.currentThread().interrupt();
+                    break;
+                }
             }
+        }
+
+        if (mine != null && !NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
+            fillMissing(buffer);
+            NpuTerrainLock.recordFailure("gate rejected: " + NpuTerrainGate.lastReason());
+            NpuStats.BLOCKS.record(0, 0, 0);
+            ci.cancel();
+            return;
+        }
+
+        if (mine != null) {
             int n = Math.min(buffer.size(), mine.length);
             for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
             NpuTerrainAssist.countTakeoverServed();
@@ -125,37 +163,22 @@ public abstract class DensitySamplerMixin {
             return;
         }
 
-        // Explicit NPU mode is intentionally fail-fast for testing: if the NPU result
-        // is not ready, do not silently let vanilla fill this volume. That would make
-        // the test indistinguishable from a successful NPU takeover.
-        // "npu" used to mean TAKEOVER: the NPU owns the whole volume, and if its result was
-        // not ready this threw and killed the worldgen thread. That is the honest definition of
-        // takeover - all NPU, no fallback - but it is not something this codebase can deliver:
-        // NpuTerrainVanilla.fill() contains no NPU call at all, so "takeover" was a CPU
-        // interpreter wearing the name, with a crash as the failure mode.
-        //
-        // What we actually have is ASSIST: the NPU contributes the part it is good at (bulk
-        // regular arithmetic - noise), and the CPU keeps everything branch- or state-dependent
-        // (spline, range_choice, cache, carvers, surface rules). A miss is therefore normal and
-        // must degrade to vanilla, never to a crash. Logging it once is how a genuinely broken
-        // pipeline still gets noticed.
-        if ("npu".equalsIgnoreCase(mode)) {
-            NpuLog.error("TERRAIN_NPU_ONLY_FAIL no prepared NPU volume at " + cx + "," + cz
-                    + " - this is assist, not takeover, so falling back to vanilla", null);
-        }
+        fillMissing(buffer);
+        NpuTerrainLock.recordFailure("no NPU volume within " + (TAKEOVER_WAIT_NS / 1_000_000L) + "ms");
+        NpuStats.BLOCKS.record(0, 0, 0);
+        ci.cancel();
+    }
 
-        // If the gate would refuse the result anyway, do not spend anything producing
-        // it. This is the difference between "the mod is a passive observer" and
-        // "the mod is quietly evaluating terrain in the background for nothing".
-        if (!NpuTerrainGate.worthComputing()) return;
-
-        // Bounded and non-blocking: it either lands in the queue or is dropped. Either way this
-        // call returns immediately.
-        // 9x9 work set, not just this chunk. One request plans 81 chunks and the background batcher
-        // executes them as many 4-chunk submissions, producing results continuously while the player
-        // is still walking towards them. Queueing only the immediate neighbours left the prefetcher
-        // with nothing to do between two submissions.
-        NpuTerrainAssist.requestWorkSet(cx, cz, sx, sy, sz, oy);
+    /**
+     * Marks a volume as NOT generated.
+     *
+     * A constant, finite density: solidly negative, so the chunk comes out as air and the gap is
+     * obvious on screen. Deliberately not vanilla's numbers and deliberately not NaN - NaN would
+     * poison everything downstream in ways that have nothing to do with the failure we want to
+     * see, and vanilla numbers would make the failure indistinguishable from success.
+     */
+    private static void fillMissing(DensityBuffer buffer) {
+        for (int i = 0; i < buffer.size(); i++) buffer.set(i, NpuTerrainLock.MISSING);
     }
 
     /**
