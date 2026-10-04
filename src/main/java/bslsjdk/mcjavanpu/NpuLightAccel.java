@@ -201,8 +201,17 @@ public final class NpuLightAccel {
         long t0 = System.nanoTime();
         NpuRuntime.MatMulResult r = NpuDispatcher.submit(a, b, m, k, n);
         long npuUs = (System.nanoTime() - t0) / 1000;
-        NpuGuard.recordUs(npuUs);
-        if (!r.ok()) return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
+        // Only a successful call is evidence. recordUs() doubles as the "path works" signal,
+        // so feeding it the duration of a call that failed tells the guard the opposite of the
+        // truth: a rejected submit returns fast, which looks like a cheap healthy call and even
+        // counts as evidence for recovering from a degrade. That is how 47 consecutive
+        // BIN_SUBMIT_FAILED submits stayed invisible - each one was booked as a success first.
+        // The failure itself is already reported to the guard by NpuDispatcher.timed().
+        if (r.ok()) {
+            NpuGuard.recordUs(npuUs);
+        } else {
+            return new Result(false, r.error(), npuUs, 0, 0, 0f, sh[0], sh[1], sh[2]);
+        }
 
         byte[] c = r.c();
 
