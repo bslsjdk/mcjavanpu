@@ -87,13 +87,25 @@ public final class NpuWorkQueue {
 
         long t0 = System.nanoTime();
         int ok = 0;
+        int i = 0;
         for (long[] it : batch) {
-            // Stop as soon as the budget is gone. Whatever is left waits for the
-            // next tick rather than eating into it.
-            if ((System.nanoTime() - t0) / 1000L >= budgetUs) {
-                synchronized (NpuWorkQueue.class) { QUEUE.addFirst(it); }
+            // Budget check, with two hard-won exceptions.
+            //
+            // The original version pushed the item back with addFirst and broke.
+            // If the first item alone consumed the budget - and log evidence shows
+            // single runs of 79ms and 190ms against a 4ms budget - that item went
+            // straight back to the head, was picked first next tick, overran again,
+            // and everything behind it never ran. Log evidence: submitted=8231,
+            // processed=0, overruns climbing every tick. Head-of-line starvation.
+            //
+            // So: always run at least one item per tick, otherwise a slow item
+            // blocks the queue forever. And requeue at the tail, so a slow item
+            // cannot monopolise the head - the others get their turn.
+            boolean first = (i++ == 0);
+            if (!first && (System.nanoTime() - t0) / 1000L >= budgetUs) {
+                synchronized (NpuWorkQueue.class) { QUEUE.addLast(it); }
                 OVERRUNS.incrementAndGet();
-                break;
+                continue;
             }
             try {
                 // One entry point for doing NPU work for a just-loaded chunk. Kept behind a
