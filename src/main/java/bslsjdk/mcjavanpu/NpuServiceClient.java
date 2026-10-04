@@ -354,16 +354,12 @@ public final class NpuServiceClient {
     public static boolean healthy() { return healthy && !cooling(); }
 
     /**
-     * Short probe: safe off the hot path only. Refreshes the cached flag.
+     * Availability probe reuses the SAME persistent IPC socket as real requests.
      *
-     * Rate limited, because every probe is a brand new socket. The service log shows a
-     * fresh IPC ACCEPT every 5 s for the whole session, plus bursts of over a hundred in
-     * under three seconds - each one a TCP handshake and a file descriptor that has to be
-     * torn down again. Nothing about "is the service there" changes that fast, so the
-     * answer is remembered briefly and repeated callers share one probe.
-     *
-     * The window is deliberately short: long enough to collapse polling, short enough
-     * that a service which dies is noticed within about a second and a half.
+     * Never open a throw-away Socket here. The service is intentionally persistent and
+     * the probe used to create a new TCP connection on every TTL expiry, which produced
+     * the repeating IPC ACCEPT lines seen in the device log. A probe is just a normal
+     * PING on the existing connection.
      */
     private static final long PROBE_TTL_MS = 1500L;
     private static volatile long probeAtMs = 0L;
@@ -373,29 +369,22 @@ public final class NpuServiceClient {
         if (cooling()) return false;
         long now = System.currentTimeMillis();
         if (now - probeAtMs < PROBE_TTL_MS) return probeValue;
-        probeAtMs = now;
-        probeValue = probe();
-        return probeValue;
+
+        String reply = request("PING");
+        boolean ok = reply != null && reply.startsWith("PONG MCNPU/");
+        probeValue = ok;
+        probeAtMs = System.currentTimeMillis();
+        return ok;
     }
 
-    /** Actually asks the service. Call this when the answer must be fresh. */
-    public static boolean isAvailableNow() { return probe(); }
-
-    private static boolean probe() {
+    /** Fresh availability check, still using the persistent connection. */
+    public static boolean isAvailableNow() {
         if (cooling()) return false;
-        try {
-            Socket s = new Socket();
-            s.connect(new InetSocketAddress(HOST, PORT), 300);
-            s.setSoTimeout(800);
-            s.getOutputStream().write("PING\n".getBytes(StandardCharsets.UTF_8));
-            s.getOutputStream().flush();
-            byte[] b = new byte[64];
-            int r = s.getInputStream().read(b);
-            s.close();
-            return r > 0 && new String(b, 0, r, StandardCharsets.UTF_8).startsWith("PONG MCNPU/");
-        } catch (Throwable t) {
-            return false;
-        }
+        String reply = request("PING");
+        boolean ok = reply != null && reply.startsWith("PONG MCNPU/");
+        probeValue = ok;
+        probeAtMs = System.currentTimeMillis();
+        return ok;
     }
 
     public static String status() { return request("STATUS"); }
