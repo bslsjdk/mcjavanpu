@@ -65,14 +65,19 @@ public final class NpuAutoProbe {
 
         StringBuilder sb = new StringBuilder("==== NPU auto probe ====");
 
-        // 0. In-process route, before anything about the service. It is a different
-        //    question - can this process reach the NPU directly? - and it deserves to be
-        //    answered first because if it works, the ~12 ms cross-process path below is
-        //    no longer the ceiling we are measuring against.
-        try {
-            sb.append("\ninprocess: ").append(NpuInProcessProbe.run());
-        } catch (Throwable t) {
-            sb.append("\ninprocess probe threw: ").append(t);
+        // 0. In-process route. Gated, not removed: the code is correct and it is the
+        //    low-latency path if it ever works, but on any launcher without a
+        //    uses-native-library declaration it fails with rc=14001 (DSP unreachable from
+        //    this process) after burning ~3 s of startup. Opt-in only.
+        if (NpuConfig.get().inProcessProbe) {
+            try {
+                sb.append("\ninprocess: ").append(NpuInProcessProbe.run());
+            } catch (Throwable t) {
+                sb.append("\ninprocess probe threw: ").append(t);
+            }
+        } else {
+            sb.append("\ninprocess: skipped (inProcessProbe=false; rc=14001 without a "
+                    + "launcher native-library declaration)");
         }
 
         // 1. Service reachability, and the reason when it is not.

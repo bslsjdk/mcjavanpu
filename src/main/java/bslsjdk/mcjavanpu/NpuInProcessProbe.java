@@ -26,6 +26,17 @@ public final class NpuInProcessProbe {
     public static synchronized String run() {
         if (ran) return result;
         ran = true;
+        if (!NpuConfig.get().inProcessProbe) {
+            // See NpuConfig.inProcessProbe: the route is known to fail with rc=14001
+            // (DSP not reachable from a game process) unless the launcher declares
+            // uses-native-library. Trying anyway costs ~3 s of startup for a certain
+            // failure, so it is opt-in.
+            result = "SKIP disabled by config (inProcessProbe=false) - the in-process "
+                    + "route fails with rc=14001 unless the launcher declares the native "
+                    + "library; the cross-process service is the supported path.";
+            NpuLog.log("inprocess: " + result);
+            return result;
+        }
         result = probe();
         NpuLog.log("inprocess: " + result);
         return result;

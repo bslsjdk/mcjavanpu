@@ -2,6 +2,7 @@ package bslsjdk.mcjavanpu.mixin;
 
 import bslsjdk.mcjavanpu.NpuChunkWork;
 import bslsjdk.mcjavanpu.NpuConfig;
+import bslsjdk.mcjavanpu.NpuGuard;
 import bslsjdk.mcjavanpu.NpuParity;
 import bslsjdk.mcjavanpu.NpuLog;
 import bslsjdk.mcjavanpu.NpuServiceClient;
@@ -140,15 +141,23 @@ public abstract class DensitySamplerMixin {
         // falling back. The point is that a failure looks like a failure: holes in the world,
         // counted and logged. Vanilla terrain mixed in would look like success and measure as
         // noise.
+        // Degraded means the guard has already decided the NPU is not paying for itself.
+        // Waiting here would burn the full timeout on EVERY chunk - which is what turned a
+        // dead pipeline into a server running 2458 ms behind - and the answer is known in
+        // advance. Decide now and let vanilla generate.
+        if (NpuGuard.isDegraded()) {
+            handleMissing(buffer, ci, "guard degraded: " + NpuGuard.reason());
+            NpuStats.BLOCKS.record(0, 0, 0);
+            return;
+        }
+
         float[] mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
 
         if (mine == null && !NpuTerrainGate.worthComputing()) {
             // The pipeline will not produce anything at all, so waiting would only stall for
             // the full timeout and end up here anyway.
-            fillMissing(buffer);
-            NpuTerrainLock.recordFailure("pipeline refused to compute: " + NpuTerrainGate.lastReason());
+            handleMissing(buffer, ci, "pipeline refused to compute: " + NpuTerrainGate.lastReason());
             NpuStats.BLOCKS.record(0, 0, 0);
-            ci.cancel();
             return;
         }
 
@@ -206,10 +215,8 @@ public abstract class DensitySamplerMixin {
         }
 
         if (mine != null && !NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
-            fillMissing(buffer);
-            NpuTerrainLock.recordFailure("gate rejected: " + NpuTerrainGate.lastReason());
+            handleMissing(buffer, ci, "gate rejected: " + NpuTerrainGate.lastReason());
             NpuStats.BLOCKS.record(0, 0, 0);
-            ci.cancel();
             return;
         }
 
@@ -222,9 +229,37 @@ public abstract class DensitySamplerMixin {
             return;
         }
 
-        fillMissing(buffer);
-        NpuTerrainLock.recordFailure("no NPU volume within " + (TAKEOVER_WAIT_NS / 1_000_000L) + "ms");
+        handleMissing(buffer, ci, "no NPU volume within " + (TAKEOVER_WAIT_NS / 1_000_000L) + "ms");
         NpuStats.BLOCKS.record(0, 0, 0);
+    }
+
+    /**
+     * What to do with a chunk the NPU did not deliver.
+     *
+     * Two very different situations reach here, and they must not be treated the same.
+     *
+     *   NPU running, nothing arrived  -> write the sentinel. A hole in the world is the
+     *   measurement: it says the pipeline was live and still failed, and it cannot be confused
+     *   with terrain that succeeded.
+     *
+     *   NPU already known unusable    -> write nothing and let vanilla generate. This is the case
+     *   that ruined the last world: guard had degraded and the service was unreachable, so every
+     *   one of tens of thousands of chunks became a sentinel. That produced no data - the fault
+     *   was already logged - it just replaced the world with holes and dragged the server thread
+     *   down with it.
+     *
+     * The test is deliberately "known unusable", not "this call failed". A single failed call is
+     * still worth marking, because it is the only way to see that a live pipeline is dropping
+     * chunks.
+     */
+    private static void handleMissing(DensityBuffer buffer, CallbackInfo ci, String why) {
+        if (NpuTerrainLock.npuKnownUnusable()) {
+            // No cancel: the vanilla sampler below fills this chunk exactly as it always has.
+            NpuTerrainLock.recordVanillaFallback(why);
+            return;
+        }
+        fillMissing(buffer);
+        NpuTerrainLock.recordFailure(why);
         ci.cancel();
     }
 

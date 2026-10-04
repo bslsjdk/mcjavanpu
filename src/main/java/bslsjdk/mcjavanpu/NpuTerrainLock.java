@@ -29,6 +29,15 @@ public final class NpuTerrainLock {
     private static final AtomicLong FAILURES = new AtomicLong();
     private static volatile String lastFailure = "none";
 
+    /**
+     * Misses where vanilla was allowed to generate instead of the sentinel.
+     *
+     * Counted separately on purpose. A sentinel miss is evidence about the NPU. A vanilla
+     * fallback is not - it says the NPU was already known to be unusable, so the chunk was
+     * never ours to lose. Mixing the two would hide a dead pipeline behind normal terrain.
+     */
+    private static final AtomicLong VANILLA_FALLBACKS = new AtomicLong();
+
     private NpuTerrainLock() {}
 
     /** Sentinel used when takeover is locked but the pipeline produced nothing. See takeoverFill. */
@@ -91,11 +100,41 @@ public final class NpuTerrainLock {
 
     public static long failures() { return FAILURES.get(); }
 
+    public static long vanillaFallbacks() { return VANILLA_FALLBACKS.get(); }
+
+    /**
+     * Record a miss that was handed back to vanilla rather than marked missing.
+     *
+     * Only for the case where the NPU is already known to be unusable - guard degraded, or the
+     * service not answering. In that state a sentinel would not measure anything, it would just
+     * destroy a world for a fault that is already logged elsewhere.
+     */
+    public static void recordVanillaFallback(String why) {
+        long n = VANILLA_FALLBACKS.incrementAndGet();
+        lastFailure = "vanilla: " + why;
+        if (n == 1 || n % 50 == 0) {
+            NpuLog.warn("TAKEOVER FALLBACK #" + n + ": " + why
+                    + " - NPU already known unusable, vanilla generated this chunk");
+        }
+    }
+
+    /**
+     * True when the NPU cannot possibly produce a volume right now.
+     *
+     * This is the difference between "the pipeline owes us a chunk and did not deliver" - which
+     * deserves the sentinel, because it is a measurement - and "the pipeline is not running" -
+     * which deserves vanilla, because writing holes there teaches us nothing and ruins the world.
+     */
+    public static boolean npuKnownUnusable() {
+        return NpuGuard.isDegraded() || !NpuServiceClient.isAvailable();
+    }
+
     public static void resetFailures() { FAILURES.set(0); lastFailure = "none"; }
 
     public static String summary() {
         return "world_lock=" + (lockedMode == null ? "none yet" : lockedMode)
                 + " takeover_misses=" + FAILURES.get()
+                + " vanilla_fallbacks=" + VANILLA_FALLBACKS.get()
                 + " last=" + lastFailure;
     }
 }

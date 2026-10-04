@@ -38,6 +38,20 @@ public final class NpuConfig {
     public boolean autoProbe = true;
 
     /**
+     * Try to reach the NPU from inside the Minecraft process (no IPC).
+     *
+     * Off by default, and not for lack of code: the route was implemented and measured, and it
+     * fails with rc=14001 - QNN's "device not reachable from this process". That is the FastRPC
+     * transport layer refusing to open, because libcdsprpc.so is outside the linker namespace a
+     * game process gets. It is not a config error and not contention with the MCNPU service.
+     *
+     * Fixing it needs the launcher to declare uses-native-library, which needs a build we have no
+     * way to test (offline login). So the probe is opt-in: leaving it on costs about 3 s of
+     * startup and a guaranteed failure line that reads like a real fault.
+     */
+    public boolean inProcessProbe = false;
+
+    /**
      * Also run the NPU pass over sky light.
      *
      * Sky light is the same shape of work as block light, so it rides the same
@@ -101,6 +115,7 @@ public final class NpuConfig {
             autoWarmup = Boolean.parseBoolean(pr.getProperty("autoWarmup", "true"));
             debugLog = Boolean.parseBoolean(pr.getProperty("debugLog", "false"));
             autoProbe = Boolean.parseBoolean(pr.getProperty("autoProbe", "true"));
+            inProcessProbe = Boolean.parseBoolean(pr.getProperty("inProcessProbe", "false"));
             skyLight = Boolean.parseBoolean(pr.getProperty("skyLight", "false"));
             guardEnabled = Boolean.parseBoolean(pr.getProperty("guardEnabled", "true"));
             lightBatch = Integer.parseInt(pr.getProperty("lightBatch", "128"));
@@ -143,6 +158,7 @@ public final class NpuConfig {
             pr.setProperty("autoWarmup", String.valueOf(autoWarmup));
             pr.setProperty("debugLog", String.valueOf(debugLog));
             pr.setProperty("autoProbe", String.valueOf(autoProbe));
+            pr.setProperty("inProcessProbe", String.valueOf(inProcessProbe));
             pr.setProperty("skyLight", String.valueOf(skyLight));
             pr.setProperty("guardEnabled", String.valueOf(guardEnabled));
             pr.setProperty("lightBatch", String.valueOf(lightBatch));
