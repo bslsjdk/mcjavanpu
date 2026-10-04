@@ -181,6 +181,7 @@ public final class NpuTerrainLattice {
         long t0 = System.nanoTime();
         float[] lattice = new float[pts];
         boolean usedNpu = false;
+        long npuUs = 0;
         String note = "";
         int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
         int done = 0;
@@ -206,7 +207,7 @@ public final class NpuTerrainLattice {
             NpuLog.error("TERRAIN_NPU_ONLY_FAIL " + note, null);
             return new Result(null, sx, sy, sz, pts, npuUs, 0, false, note);
         }
-        long npuUs = (System.nanoTime() - t0) / 1000;
+        npuUs = (System.nanoTime() - t0) / 1000;
 
         long t1 = System.nanoTime();
         float[] out = new float[sx * sy * sz];
