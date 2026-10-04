@@ -54,8 +54,13 @@ public final class NpuWorkQueue {
     /** Called from the scheduler when a batch is handed over. Cheap and non-blocking. */
     public static synchronized void submit(List<long[]> items) {
         for (long[] it : items) {
-            if (QUEUE.size() >= QUEUE_CAP) { DROPPED.incrementAndGet(); continue; }
+            if (QUEUE.size() >= QUEUE_CAP) {
+                DROPPED.incrementAndGet();
+                NpuDiagnostics.count("chunk.dropped_queue_full");
+                continue;
+            }
             QUEUE.addLast(it);
+            NpuDiagnostics.count("chunk.submitted");
             SUBMITTED.incrementAndGet();
         }
     }
@@ -118,6 +123,7 @@ public final class NpuWorkQueue {
         }
         lastRunUs = (System.nanoTime() - t0) / 1000;
         PROCESSED.addAndGet(ok);
+        NpuDiagnostics.count("chunk.processed", ok);
         if (ok > 0) NpuStats.CHUNK.record(ok, lastRunUs, lastRunUs);
     }
 
