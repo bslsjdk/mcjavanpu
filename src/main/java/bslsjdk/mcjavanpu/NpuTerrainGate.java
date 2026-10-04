@@ -62,7 +62,12 @@ public final class NpuTerrainGate {
      * nothing until someone proves the interpreter matches vanilla and opens it.
      */
     public static boolean worthComputing() {
-        return takeoverAllowed && NpuTerrainVanilla.ready() && NpuDfJson.lastUnsupported() == 0;
+        if (!takeoverAllowed) return false;
+        NpuConfig cfg = NpuConfig.get();
+        // Explicit npu mode is the experimental HTP terrain path. It intentionally
+        // does not wait for the CPU parity interpreter to be built.
+        if (cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode)) return true;
+        return NpuTerrainVanilla.ready() && NpuDfJson.lastUnsupported() == 0;
     }
 
     /**
@@ -80,13 +85,16 @@ public final class NpuTerrainGate {
             return refuse("short volume " + volume.length + "<" + expectedSize);
         }
 
-        // A compiled tree has to exist, and it has to have understood every node it
-        // was given. NpuDfJson silently turns anything it does not recognise into a
-        // constant 0, so "it built" is not the same as "it understood".
-        if (!NpuTerrainVanilla.ready()) return refuse("tree not ready: " + NpuTerrainVanilla.failReason());
+        NpuConfig cfg = NpuConfig.get();
+        boolean npuMode = cfg != null && "npu".equalsIgnoreCase(cfg.chunkMode);
+        // npu mode deliberately does not claim vanilla parity. Its result is produced by
+        // the experimental HTP lattice generator, so the parity tree is not a prerequisite.
+        if (!npuMode) {
+            if (!NpuTerrainVanilla.ready()) return refuse("tree not ready: " + NpuTerrainVanilla.failReason());
 
-        int unsupported = NpuDfJson.lastUnsupported();
-        if (unsupported > 0) return refuse(unsupported + " unsupported density nodes");
+            int unsupported = NpuDfJson.lastUnsupported();
+            if (unsupported > 0) return refuse(unsupported + " unsupported density nodes");
+        }
 
         // Any non-finite value poisons everything downstream.
         for (int i = 0; i < volume.length; i++) {
