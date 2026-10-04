@@ -52,16 +52,20 @@ public final class NpuDispatcher {
     }
 
     /**
-     * Total element budget across all three tensors, matching the native side.
+     * Sanity ceiling on the total elements of one submission. NOT the native cap.
      *
-     * The native cap is per submission, not per dimension. Checking only that each
-     * dimension is within MM_MAX is what let 128x512x512 through: every dimension is
-     * legal, but the tensors total 128*512 + 512*512 + 128*512 = 393216 elements, six
-     * times over budget. Those calls paid for padding, an IPC round trip and a failure
-     * path every single time - 47 of them in one session, one of which stalled a tick
-     * for 428 ms.
+     * This used to be 16384, copied from NpuTerrainLattice.MAX_ELEMENTS - a per-chunk
+     * limit that exists because terrain wants many small submits, not because the
+     * service enforces it. Generalising it here was wrong and broke a working shape:
+     * the device log shows m=128 k=512 n=512 running fine (393216 elements, 29 ms),
+     * which the 16384 ceiling now refused.
+     *
+     * So this is only a guard against something absurd - a padded shape so large it
+     * would blow the heap before the service ever saw it. Proven working shapes are
+     * ~400k, so the ceiling sits far above that and the terrain path keeps its own
+     * tighter limit where it actually wants one.
      */
-    public static final long MAX_TOTAL_ELEMENTS = 16384L;
+    public static final long MAX_TOTAL_ELEMENTS = 1L << 20;
 
     public static long totalElements(int m, int k, int n) {
         return (long) m * k + (long) k * n + (long) m * n;
