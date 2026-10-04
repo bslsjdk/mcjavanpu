@@ -257,11 +257,14 @@ public final class NpuTerrainLattice {
     /**
      * Generates several chunks in ONE submission.
      *
-     * This is the cross-chunk batching the review asked for, and the reason the lattice was
-     * widened: with 225 points per chunk at K=16, four chunks cost 14400 elements, which fits the
-     * 16384 budget. One call covers four chunks instead of four calls each paying their own fixed
-     * cost - which, given that the native side serialises on a global lock, is the only lever that
-     * actually raises throughput.
+     * This is the cross-chunk batching the review asked for. Note the budget is per submission,
+     * not per chunk: at 1225 points per chunk and K=16 a chunk is 19600 elements and does NOT fit
+     * the 16384 cap, so batching happens in row blocks that cross chunk boundaries rather than by
+     * trying to fit whole chunks into one call. Two chunks then cost three submissions, with the
+     * second chunk's head filling the first chunk's short tail.
+     *
+     * That matters because the native side serialises on a global lock, so the round trip count
+     * is the throughput lever - fewer, fuller submissions beat more, smaller ones.
      *
      * All chunks must share the same volume shape; heterogeneous shapes go through the
      * single-chunk path.
@@ -275,25 +278,42 @@ public final class NpuTerrainLattice {
         if (count <= 0) return new float[0][];
         int lx = sx / CELL_XZ + 1, lz = sz / CELL_XZ + 1, ly = sy / CELL_Y + 1;
         int pts = lx * ly * lz;
-        int perChunk = pts * K;
+        int totalRows = count * pts;
 
-        // Fill in row blocks that respect the element budget, batching as many chunks per
-        // submission as the budget allows rather than assuming count fits.
-        int chunksPerSubmit = Math.max(1, MAX_ELEMENTS / perChunk);
+        // The unit of work is the ROW, not the chunk.
+        //
+        // pts * K is 1225 * 16 = 19600 against a 16384 element budget, so a whole chunk
+        // does not fit. The previous code worked that out, set chunksPerSubmit to 1 - and
+        // then submitted all pts rows in one call anyway. Every batched request therefore
+        // asked for 19600 elements against a 16384 cap and came back rejected, so npu mode
+        // returned null and produced nothing. That is the whole reason this path looked
+        // idle while the service was up.
+        //
+        // Submitting in row blocks fixes the rejection. Letting a row block cross chunk
+        // boundaries fixes the second half: a chunk's tail (1225 - 1024 = 201 rows) would
+        // otherwise ride alone and pay a full round trip for a fifth of a payload. Merged
+        // across chunks, two chunks cost three submissions instead of four.
+        final int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+
+        // Prepare in bounded blocks so peak memory does not scale with the whole batch.
+        final int prepRowsCap = Math.max(rowsPerSubmit, 8192);
+        final int chunkBlock = Math.max(1, prepRowsCap / pts);
+
         float[][] out = new float[count][];
-        float[] latticeAll = new float[count * pts];
+        float[] latticeAll = new float[totalRows];
         long totalNpu = 0, totalPrepare = 0;
 
-        for (int start = 0; start < count; start += chunksPerSubmit) {
-            int n = Math.min(chunksPerSubmit, count - start);
+        for (int cs = 0; cs < count; cs += chunkBlock) {
+            int cn = Math.min(chunkBlock, count - cs);
+            int blockRows = cn * pts;
             long tStart = System.nanoTime();
 
-            float[] feat = new float[n * pts * K];
-            for (int ci = 0; ci < n; ci++) {
-                int ox = cxs[start + ci] << 4;
-                int oz = czs[start + ci] << 4;
-                int oy = oys[start + ci];
-                long seed = seeds[start + ci];
+            float[] feat = new float[blockRows * K];
+            for (int ci = 0; ci < cn; ci++) {
+                int ox = cxs[cs + ci] << 4;
+                int oz = czs[cs + ci] << 4;
+                int oy = oys[cs + ci];
+                long seed = seeds[cs + ci];
                 float s1 = ((seed >>> 3) % 997) / 997f;
                 float s2 = ((seed >>> 11) % 991) / 991f;
                 int pi = 0;
@@ -310,32 +330,38 @@ public final class NpuTerrainLattice {
             totalPrepare += (System.nanoTime() - tStart) / 1000;
 
             final float SA = 1f / 127f;
-            float[] w = weights(seeds[start]);
-            byte[] ab = new byte[feat.length];
-            for (int p = 0; p < feat.length; p++) {
-                int q = Math.round(feat[p] / SA);
-                ab[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
-            }
+            float[] w = weights(seeds[cs]);
             byte[] bb = new byte[K];
             for (int p = 0; p < K; p++) {
                 int q = Math.round(w[p] / SA);
                 bb[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
             }
 
-            long t0 = System.nanoTime();
-            NpuRuntime.MatMulResult r = NpuDispatcher.submit(ab, bb, n * pts, K, 1);
-            totalNpu += (System.nanoTime() - t0) / 1000;
+            byte[] ab = new byte[blockRows * K];
+            for (int p = 0; p < blockRows * K; p++) {
+                int q = Math.round(feat[p] / SA);
+                ab[p] = (byte) (q < -127 ? -127 : (q > 127 ? 127 : q));
+            }
 
-            if (r.ok() && r.c() != null && r.c().length >= n * pts) {
+            long t0 = System.nanoTime();
+            for (int done = 0; done < blockRows; done += rowsPerSubmit) {
+                int rows = Math.min(rowsPerSubmit, blockRows - done);
+                byte[] block = new byte[rows * K];
+                System.arraycopy(ab, done * K, block, 0, rows * K);
+
+                NpuRuntime.MatMulResult r = NpuDispatcher.submit(block, bb, rows, K, 1);
+                if (!(r.ok() && r.c() != null && r.c().length >= rows)) {
+                    String why = r.ok() ? "short NPU result" : "NPU submit failed";
+                    NpuLog.error("TERRAIN_NPU_ONLY_FAIL rows=" + rows + " at=" + (cs * pts + done)
+                            + " reason=" + why, null);
+                    return null;
+                }
                 float scale = r.scaleC();
                 if (scale == 0f) scale = SA * SA;
                 byte[] c = r.c();
-                for (int p = 0; p < n * pts; p++) latticeAll[start * pts + p] = c[p] * scale;
-            } else {
-                String why = r.ok() ? "short NPU result" : "NPU submit failed";
-                NpuLog.error("TERRAIN_NPU_ONLY_FAIL batch start=" + start + " count=" + n + " reason=" + why, null);
-                return null;
+                for (int p = 0; p < rows; p++) latticeAll[cs * pts + done + p] = c[p] * scale;
             }
+            totalNpu += (System.nanoTime() - t0) / 1000;
         }
 
         long t1 = System.nanoTime();
