@@ -44,11 +44,11 @@ public final class NpuTerrainLock {
         if (lockedSeed == seed && lockedMode != null) return lockedMode;
 
         NpuConfig cfg = NpuConfig.get();
-        if (seed == Long.MIN_VALUE) {
+        if (seed == NpuChunkWork.SEED_UNKNOWN) {
             // World seed not known yet (chunk load hooks have not fired). Defer rather than
             // locking under a placeholder - a lock recorded now would silently outlive the
             // moment it was made for.
-            return cfg.chunkMode;
+            return isMode(cfg.chunkMode) ? cfg.chunkMode.toLowerCase(Locale.ROOT) : "vanilla";
         }
 
         String m = cfg.worldLocks.get(seed);
