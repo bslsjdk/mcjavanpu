@@ -86,11 +86,21 @@ public final class NpuTerrainVanilla {
     public static synchronized NpuDf tree(long seed) {
         if (tree != null && treeSeed == seed) return tree;
         try {
-            if (!NpuVanillaJson.available()) { failReason = "jar not found"; return null; }
+            if (!NpuVanillaJson.available()) {
+                failReason = "jar not found: " + NpuVanillaJson.jarLocation();
+                return null;
+            }
             String json = NpuVanillaJson.densityFunction("final_density");
-            if (json == null || json.isEmpty()) { failReason = "final_density missing"; return null; }
+            if (json == null || json.isEmpty()) {
+                failReason = "final_density missing (tried overworld/ and flat)";
+                return null;
+            }
             NpuDfJson.Build b = NpuDfJson.buildTree(json, seed);
-            if (b == null || b.root == null) { failReason = "tree build returned null"; return null; }
+            if (b == null || b.root == null) {
+                failReason = "tree build returned null (unsupported node: "
+                        + NpuDfJson.lastUnsupported() + ")";
+                return null;
+            }
             tree = b.root;
             treeSeed = seed;
             failReason = "";
