@@ -112,6 +112,23 @@ public final class NpuRuntime {
 
     public static synchronized void shutdown(){HtpBackend.getInstance().close();}
 
+    // ---- in-process native hooks -------------------------------------------------
+    //
+    // Declared here, and only here, because the symbols exported by libmcfclnpu.so are
+    // bound to bslsjdk.mcjavanpu.NpuRuntime - a JNI name encodes its class. That is also
+    // why the probe lives in a separate class: these declarations are the fixed point,
+    // everything else is free to move.
+    //
+    // Unused in the normal build. They resolve only when the plugin is installed and
+    // NpuInProcessProbe has loaded it, so calling them without that is an
+    // UnsatisfiedLinkError - which is exactly why the probe checks before it calls.
+    static native boolean nativeInit();
+    static native String nativeGetDeviceInfo();
+    static native String nativeGetLogPath();
+    static native boolean nativeTest();
+    static native String nativeBenchmark();
+    static native void nativeShutdown();
+
     static synchronized void shutdownInternal(){
         // Minecraft must never shut down the independent MCNPU service.
         initialized=false; available=false;
