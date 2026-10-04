@@ -83,6 +83,40 @@ public final class NpuDfProgram {
 
     public int instructions() { return op.length; }
 
+    /**
+     * Positions of every OP_NOISE in the program, computed once.
+     *
+     * The assist path needs this because it cannot know from outside which noises the
+     * program will ask for: OP_JZ means the set that actually executes can differ per
+     * point. The answer is not to guess - it is to evaluate every noise the program
+     * contains, for every lattice point, up front. Noise is pure, so unused values cost
+     * work and change nothing.
+     */
+    private int[] noiseOpPcs;
+
+    private int[] noiseOpPcs() {
+        int[] a = noiseOpPcs;
+        if (a == null) {
+            int n = 0;
+            for (int i = 0; i < op.length; i++) if (op[i] == OP_NOISE) n++;
+            a = new int[n];
+            int j = 0;
+            for (int i = 0; i < op.length; i++) if (op[i] == OP_NOISE) a[j++] = i;
+            noiseOpPcs = a;
+        }
+        return a;
+    }
+
+    public int noiseEvalCount() { return noiseOpPcs().length; }
+
+    public int noiseIndexAt(int i) { return rb[noiseOpPcs()[i]]; }
+
+    public double noiseXzScaleAt(int i) { return imm[rc[noiseOpPcs()[i]]]; }
+
+    public double noiseYScaleAt(int i) { return imm[rc[noiseOpPcs()[i]] + 1]; }
+
+    public NpuNoise.NormalNoise[] theNoises() { return noises; }
+
     public int registers() { return regs; }
 
     public int constants() { return kReg.length; }
@@ -91,6 +125,18 @@ public final class NpuDfProgram {
     public double[] registersFor() { return new double[Math.max(regs, 8)]; }
 
     public double eval(double x, double y, double z, double[] r) {
+        return eval(x, y, z, r, null);
+    }
+
+    /**
+     * nv, when non-null, holds one precomputed value per noise channel, indexed the same
+     * way as {@code noises}. The assist path fills it from a batch evaluation and passes
+     * it here, so OP_NOISE reads a table instead of calling into the noise object.
+     *
+     * Values come from the same NormalNoise instances, so this is not an approximation -
+     * it is the same numbers arriving by a different route.
+     */
+    public double eval(double x, double y, double z, double[] r, float[] nv) {
         for (int i = 0; i < kReg.length; i++) r[kReg[i]] = kVal[i];
         r[0] = x;
         r[1] = y;
@@ -153,7 +199,11 @@ public final class NpuDfProgram {
                 }
                 case OP_NOISE: {
                     int base = rc[pc];
-                    r[ra[pc]] = nz[rb[pc]].getValue(r[0] * imm[base], r[1] * imm[base + 1], r[2] * imm[base]);
+                    if (nv != null) {
+                        r[ra[pc]] = nv[rb[pc]];
+                    } else {
+                        r[ra[pc]] = nz[rb[pc]].getValue(r[0] * imm[base], r[1] * imm[base + 1], r[2] * imm[base]);
+                    }
                     pc++; break;
                 }
                 case OP_SPLINE:
