@@ -33,7 +33,19 @@ public final class NpuChunkWork {
     private static final int SUB_COUNT = SUB.length;
 
     private static volatile ServerLevel lastLevel;
-    private static volatile long lastWorldSeed;
+
+    /**
+     * Unknown-seed sentinel.
+     *
+     * It used to be 0, which is also a perfectly valid Minecraft seed. The lock therefore
+     * treated "we never captured a level" as "this is the world with seed 0" and persisted
+     * that choice to disk - so a mode chosen before the first level existed stayed frozen to
+     * a world that was never the one being generated. MIN_VALUE is not a seed Minecraft can
+     * produce, so it is unambiguous.
+     */
+    public static final long SEED_UNKNOWN = Long.MIN_VALUE;
+
+    private static volatile long lastWorldSeed = SEED_UNKNOWN;
 
     /**
      * Resolved reflection handles.
@@ -78,11 +90,14 @@ public final class NpuChunkWork {
     public static void setLevel(ServerLevel level) {
         lastLevel = level;
         try { lastWorldSeed = level.getSeed(); }
-        catch (Throwable ignored) { lastWorldSeed = 0L; }
+        catch (Throwable ignored) { lastWorldSeed = SEED_UNKNOWN; }
     }
 
     /** Real world seed captured from the active ServerLevel. */
     public static long worldSeed() { return lastWorldSeed; }
+
+    /** False until a level has been seen. Callers that freeze per-world state must check this. */
+    public static boolean worldSeedKnown() { return lastWorldSeed != SEED_UNKNOWN; }
 
     public static ServerLevel level() { return lastLevel; }
 
