@@ -80,6 +80,7 @@ public final class NpuServiceClient {
         s.connect(new InetSocketAddress(HOST, PORT), CONNECT_TIMEOUT_MS);
         s.setSoTimeout(READ_TIMEOUT_MS);
         s.setTcpNoDelay(true);
+        try { s.setKeepAlive(true); } catch (Throwable ignored) {}
         // A 512^3 submit moves ~780KB over loopback. The unbuffered streams turned
         // that into a long series of small syscalls and showed up as ~15ms on top
         // of the 5.5ms the HTP actually needed. Big socket buffers plus buffered
@@ -89,6 +90,15 @@ public final class NpuServiceClient {
         socket = s;
         in = new BufferedInputStream(s.getInputStream(), 256 * 1024);
         out = new BufferedOutputStream(s.getOutputStream(), 256 * 1024);
+        // Identify the long-lived game/client session once. After this point all RPCs,
+        // including health/status traffic, reuse this exact socket.
+        out.write("HELLO MCJAVA_NPU/1\n".getBytes(StandardCharsets.UTF_8));
+        out.flush();
+        String hello = readLineUtf8(in);
+        if (hello == null || !hello.startsWith("OK HELLO")) {
+            closeStreams();
+            throw new IOException("bad HELLO reply: " + hello);
+        }
     }
 
     private static String readLineUtf8(InputStream is) throws IOException {
@@ -366,15 +376,11 @@ public final class NpuServiceClient {
     private static volatile boolean probeValue = false;
 
     public static boolean isAvailable() {
-        if (cooling()) return false;
-        long now = System.currentTimeMillis();
-        if (now - probeAtMs < PROBE_TTL_MS) return probeValue;
-
-        String reply = request("PING");
-        boolean ok = reply != null && reply.startsWith("PONG MCNPU/");
-        probeValue = ok;
-        probeAtMs = System.currentTimeMillis();
-        return ok;
+        // Health is a cached state, not a network operation. Re-probing here used to
+        // turn innocent capability checks into periodic IPC traffic. Real requests
+        // refresh this flag; callers that truly need a fresh probe can use
+        // isAvailableNow().
+        return healthy();
     }
 
     /** Fresh availability check, still using the persistent connection. */
