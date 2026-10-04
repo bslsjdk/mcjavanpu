@@ -33,4 +33,5 @@ jobs:
           name: mcjavanpu
           path: |
             build/libs/*.jar
+          overwrite: true
           retention-days: 3
