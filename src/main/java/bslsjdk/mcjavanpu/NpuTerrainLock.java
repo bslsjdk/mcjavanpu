@@ -78,8 +78,15 @@ public final class NpuTerrainLock {
     }
 
     public static void recordFailure(String why) {
-        FAILURES.incrementAndGet();
+        long n = FAILURES.incrementAndGet();
         lastFailure = why;
+        // A silent miss is the one thing this mode must never be: it would look exactly like a
+        // successful takeover. Log the first one in full and then every 50th, so a persistent
+        // failure is visible without drowning the log.
+        if (n == 1 || n % 50 == 0) {
+            NpuLog.error("TAKEOVER MISS #" + n + " at chunk: " + why
+                    + " - wrote the missing-volume sentinel, NOT vanilla terrain", null);
+        }
     }
 
     public static long failures() { return FAILURES.get(); }
