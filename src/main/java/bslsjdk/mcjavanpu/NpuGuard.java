@@ -2,6 +2,8 @@ package bslsjdk.mcjavanpu;
 
 import java.util.Arrays;
 import java.util.Locale;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
@@ -108,7 +110,13 @@ public final class NpuGuard {
     /** Record the wall time of a completed submit(), in microseconds. */
     public static void recordUs(long micros) {
         totalCalls.incrementAndGet();
-        CONSECUTIVE_FAILS.set(0);
+        // Deliberately does NOT clear the per-signature failure streaks.
+        //
+        // A success here proves some call worked. It does not prove that the shape which has
+        // failed three times now works, and clearing on any success is exactly what let 47
+        // consecutive BIN_SUBMIT_FAILED submits go unnoticed while other shapes succeeded in
+        // between. Streaks are cleared by recovery instead, which is the point at which we
+        // have actually re-established that the path works.
         if (!NpuConfig.get().guardEnabled) return;
 
         // A call that came back inside budget is evidence the path works; take that as a reason to
@@ -164,24 +172,52 @@ public final class NpuGuard {
     /**
      * Record a failed call.
      *
-     * Not every failure means the service is unhealthy. A caller asking for a
-     * shape that cannot be expressed, or passing a short buffer, is a bug in the
-     * caller and must not disable the NPU for everything else. Only transport and
-     * availability failures count towards backing off.
-     */
-    /**
-     * Consecutive failures of any kind.
+     * One failure proves very little: a caller asking for a shape that cannot be expressed,
+     * or passing a short buffer, is a bug in that caller and must not disable the NPU for
+     * everything else. So a single failure of any kind is just a log line.
      *
-     * Cleared by every recorded success, so this counts a current streak rather than a
-     * lifetime total: a path that mostly works with the occasional bad shape is untouched,
-     * while one that is broken right now backs off after a handful of attempts.
+     * What matters is repetition. Streaks are counted per error signature and are cleared
+     * only when the guard recovers, so a fault that keeps coming back is eventually treated
+     * as the path being broken whatever its name says.
      */
-    private static final java.util.concurrent.atomic.AtomicInteger CONSECUTIVE_FAILS =
-            new java.util.concurrent.atomic.AtomicInteger();
     private static final java.util.concurrent.atomic.AtomicLong consecutiveFailsDegraded =
             new java.util.concurrent.atomic.AtomicLong();
     /** Failures in a row before the path is treated as broken whatever the error says. */
-    private static final int FAIL_RUN_LIMIT = 6;
+    private static final int FAIL_RUN_LIMIT = 3;
+
+    /**
+     * Consecutive failures, tracked per error signature rather than globally.
+     *
+     * A single global streak was reset by any success anywhere, which is why 47 straight
+     * BIN_SUBMIT_FAILED submits never tripped anything: unrelated calls on the light path
+     * kept zeroing the counter between them. A streak keyed by the error text cannot be
+     * diluted by successes on other shapes or other paths - if the same error keeps coming
+     * back, that path is broken and nothing else succeeding proves otherwise.
+     *
+     * Streaks are cleared only by recovery (a successful probe), not by unrelated success.
+     */
+    private static final Map<String, java.util.concurrent.atomic.AtomicInteger> FAIL_RUNS =
+            new ConcurrentHashMap<>();
+    /** Bound the map so a pathological variety of error texts cannot grow it forever. */
+    private static final int MAX_TRACKED_SIGNATURES = 64;
+
+    /**
+     * Collapse an error to a signature: the leading token with digits stripped.
+     *
+     * "ERR BIN_SUBMIT_FAILED rc=14001" and "ERR BIN_SUBMIT_FAILED rc=1002" are the same
+     * failure for this purpose - the point is that it keeps happening, not which code it
+     * reported. Keeping the codes would split one repeating fault into many single ones.
+     */
+    private static String signature(String e) {
+        String head = e.trim();
+        int sp = head.indexOf(' ');
+        if (sp > 0 && head.startsWith("ERR ")) {
+            head = head.substring(4);
+            sp = head.indexOf(' ');
+        }
+        if (sp > 0) head = head.substring(0, sp);
+        return head.replaceAll("\\d+", "#");
+    }
 
     public static void recordFailure(String why) {
         NpuDiagnostics.fail("guard." + (why == null ? "unknown"
@@ -207,24 +243,41 @@ public final class NpuGuard {
         // paying for a call that cannot succeed.
         //
         // So a single failure of any kind is still just a log line, but a run of them is
-        // treated as the path being broken regardless of the reason. Six in a row is well
-        // past coincidence, and backing off then costs nothing that was going to work.
-        int run = CONSECUTIVE_FAILS.incrementAndGet();
+        // treated as the path being broken regardless of the reason. Three in a row of the
+        // same signature is well past coincidence, and backing off then costs nothing that
+        // was going to work.
+        String sig = signature(e);
+        if (FAIL_RUNS.size() >= MAX_TRACKED_SIGNATURES && !FAIL_RUNS.containsKey(sig)) {
+            FAIL_RUNS.clear();
+        }
+        int run = FAIL_RUNS.computeIfAbsent(sig,
+                k -> new java.util.concurrent.atomic.AtomicInteger()).incrementAndGet();
+
         if (!transport) {
             if (run >= FAIL_RUN_LIMIT) {
                 consecutiveFailsDegraded.incrementAndGet();
                 lastProbeMs = System.currentTimeMillis();
-                degrade("repeated failure x" + run + ": " + e);
-                CONSECUTIVE_FAILS.set(0);
+                degrade("repeated " + sig + " x" + run + " (last: " + e + ")");
                 return;
             }
-            if (NpuConfig.get().debugLog) NpuLog.warn("guard: non-transport failure ignored: " + e
-                    + " (consecutive=" + run + "/" + FAIL_RUN_LIMIT + ")");
+            if (NpuConfig.get().debugLog) NpuLog.warn("guard: non-transport failure noted: " + e
+                    + " (run " + sig + "=" + run + "/" + FAIL_RUN_LIMIT + ")");
             return;
         }
 
         lastProbeMs = System.currentTimeMillis();
         degrade("transport failure: " + e);
+    }
+
+    /** Worst current failure streak, for diagnostics: "BIN_SUBMIT_FAILED=5". */
+    public static String worstFailureRun() {
+        String worstSig = null;
+        int worst = 0;
+        for (Map.Entry<String, java.util.concurrent.atomic.AtomicInteger> en : FAIL_RUNS.entrySet()) {
+            int v = en.getValue().get();
+            if (v > worst) { worst = v; worstSig = en.getKey(); }
+        }
+        return worst == 0 ? "-" : worstSig + "=" + worst;
     }
 
     private static void degrade(String why) {
@@ -239,6 +292,9 @@ public final class NpuGuard {
     private static void recover() {
         degraded = false;
         reason = "";
+        // A clean probe is real evidence the path works again, so the accumulated failure
+        // streaks no longer describe the current state and must not trip again immediately.
+        FAIL_RUNS.clear();
         NpuLog.log("guard recovered, NPU re-enabled");
     }
 
@@ -267,12 +323,14 @@ public final class NpuGuard {
         synchronized (LOCK) { cursor = 0; filled = 0; }
         degraded = false;
         reason = "";
+        FAIL_RUNS.clear();
     }
 
     public static String summary() {
         return String.format(Locale.ROOT,
-                "guard %s p50=%dus p99=%dus budget=%dus calls=%d rejected=%d trips=%d %s",
+                "guard %s p50=%dus p99=%dus budget=%dus calls=%d rejected=%d trips=%d runs=%s %s",
                 degraded ? "DEGRADED" : "ok", p50Us(), p99Us(), budgetUs(),
-                totalCalls.get(), rejectedCalls.get(), degradedEvents.get(), reason);
+                totalCalls.get(), rejectedCalls.get(), degradedEvents.get(),
+                worstFailureRun(), reason);
     }
 }
