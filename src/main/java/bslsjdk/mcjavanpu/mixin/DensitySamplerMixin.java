@@ -4,6 +4,7 @@ import bslsjdk.mcjavanpu.NpuChunkWork;
 import bslsjdk.mcjavanpu.NpuConfig;
 import bslsjdk.mcjavanpu.NpuParity;
 import bslsjdk.mcjavanpu.NpuLog;
+import bslsjdk.mcjavanpu.NpuServiceClient;
 import bslsjdk.mcjavanpu.NpuStats;
 import bslsjdk.mcjavanpu.NpuTerrainAssist;
 import bslsjdk.mcjavanpu.NpuTerrainLattice;
@@ -17,6 +18,8 @@ import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At;
 import org.spongepowered.asm.mixin.injection.Inject;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
+
+import java.util.concurrent.locks.LockSupport;
 
 /**
  * Hooks Minecraft density volume sampling.
@@ -44,14 +47,29 @@ public abstract class DensitySamplerMixin {
     private static final int BATCH_SIDE = 2;
 
     /**
-     * How long locked takeover waits for its volume before declaring a miss.
+     * How long locked takeover waits for one volume, once the service is answering.
      *
-     * Generous on purpose: this mode exists to measure the NPU path, and a timeout that fires
-     * early would turn a slow-but-working pipeline into a row of holes. Blocking worldgen for
-     * this long is unacceptable for play and acceptable for a benchmark, which is why it only
-     * applies when the world is locked to takeover.
+     * The worker produces a batch of chunks per drain, so a healthy pipeline answers well
+     * inside this. It used to be 8 s, and since it applies to EVERY chunk it turned "the
+     * service is not running" into a world that never finishes loading: a few hundred chunks
+     * at 8 s each is longer than anyone waits.
      */
-    private static final long TAKEOVER_WAIT_NS = 8_000_000_000L;
+    private static final long TAKEOVER_WAIT_NS = 2_000_000_000L;
+
+    /**
+     * One-off grace window for the very first miss, waiting for the service to appear.
+     *
+     * The MCNPU app is a separate APK the player has to start. If it is not up when the world
+     * opens, every chunk would instantly become a hole and the measurement - and the world -
+     * would be worthless. So the first miss may wait this long for the service to answer, and
+     * starting the app mid-load still yields NPU terrain. Once the grace is spent with no
+     * answer, waiting is pointless and chunks fail fast instead of stalling.
+     */
+    private static final long SERVICE_GRACE_NS = 30_000_000_000L;
+
+    /** Set on the first miss. Zero means "no miss yet". */
+    private static volatile long graceDeadlineNanos = 0L;
+    private static volatile boolean graceAnnounced = false;
 
 
     @Inject(method = "sampleVolume", at = @At("HEAD"), cancellable = true, require = 0)
@@ -133,16 +151,31 @@ public abstract class DensitySamplerMixin {
 
         if (mine == null) {
             NpuTerrainAssist.requestWorkSet(cx, cz, sx, sy, sz, oy);
-            long deadline = System.nanoTime() + TAKEOVER_WAIT_NS;
+
+            final long t0 = System.nanoTime();
+            if (graceDeadlineNanos == 0L) {
+                graceDeadlineNanos = t0 + SERVICE_GRACE_NS;
+            }
+            final boolean reachable = NpuServiceClient.isAvailable();
+            if (!reachable && !graceAnnounced) {
+                graceAnnounced = true;
+                NpuLog.log("takeover: MCNPU service not answering yet - waiting up to "
+                        + (SERVICE_GRACE_NS / 1_000_000L)
+                        + "ms for it. Start the MCNPU app now and terrain will still be "
+                        + "produced on the NPU.");
+            }
+
+            // Three cases, and the difference between them is what keeps world loading alive:
+            //   service answering -> short wait, the worker fills it
+            //   grace not yet spent -> wait out the grace, the app may still be starting
+            //   grace spent      -> no wait at all; waiting cannot produce a volume
+            final long deadline = reachable ? t0 + TAKEOVER_WAIT_NS
+                    : (t0 < graceDeadlineNanos ? graceDeadlineNanos : t0);
+
             while (System.nanoTime() < deadline) {
                 mine = NpuTerrainAssist.peekTakeover(cx, cz, oy);
                 if (mine != null) break;
-                try {
-                    Thread.sleep(0, 200_000);            // 0.2 ms
-                } catch (InterruptedException ie) {
-                    Thread.currentThread().interrupt();
-                    break;
-                }
+                LockSupport.parkNanos(200_000L);          // 0.2 ms
             }
         }
 
