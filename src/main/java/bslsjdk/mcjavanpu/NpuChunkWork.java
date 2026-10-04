@@ -33,6 +33,7 @@ public final class NpuChunkWork {
     private static final int SUB_COUNT = SUB.length;
 
     private static volatile ServerLevel lastLevel;
+    private static volatile long lastWorldSeed;
 
     /**
      * Resolved reflection handles.
@@ -74,7 +75,14 @@ public final class NpuChunkWork {
     private NpuChunkWork() {}
 
     /** Set from the chunk-load event so later work can reach the level without threading it through. */
-    public static void setLevel(ServerLevel level) { lastLevel = level; }
+    public static void setLevel(ServerLevel level) {
+        lastLevel = level;
+        try { lastWorldSeed = level.getSeed(); }
+        catch (Throwable ignored) { lastWorldSeed = 0L; }
+    }
+
+    /** Real world seed captured from the active ServerLevel. */
+    public static long worldSeed() { return lastWorldSeed; }
 
     public static ServerLevel level() { return lastLevel; }
 
