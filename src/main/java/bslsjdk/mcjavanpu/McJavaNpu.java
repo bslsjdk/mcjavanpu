@@ -149,6 +149,32 @@ public final class McJavaNpu implements ModInitializer {
     }
 
     /**
+     * Element-wise add of two arrays through the service, split internally into
+     * fixed-shape ways and merged back into one result.
+     *
+     * Runs on a worker on purpose. The point of this command is to measure a batch
+     * that takes seconds, and a handler that blocks the server thread for that long
+     * stops the world instead of measuring it.
+     *
+     * The result goes to the log and not to chat: this thread outlives the command,
+     * and handing a CommandSourceStack to it would touch game state from a thread
+     * the game does not own. maxWay() is also deliberately not called here - it asks
+     * the service, which would block the command thread for up to a read timeout.
+     */
+    private static int runBigAdd(com.mojang.brigadier.context.CommandContext<CommandSourceStack> context, int total) {
+        Thread.ofVirtual().name("mcjavanpu-bigadd").start(() -> {
+            try {
+                NpuLog.log("[NPU] bigadd " + NpuBigAddClient.selfTest(total, 0, 2));
+            } catch (Throwable t) {
+                NpuLog.error("[NPU] bigadd failed", t);
+            }
+        });
+        context.getSource().sendSuccess(() -> Component.literal(
+                "[NPU] bigadd started total=" + total + " (result in log)"), false);
+        return 1;
+    }
+
+    /**
      * Shape-planned real-data submit: the caller gives the LOGICAL shape and
      * NpuDispatcher pads it to the hardware-friendly shape, runs one call, then
      * crops back. Reports both the logical and the planned shape.
@@ -821,6 +847,16 @@ public final class McJavaNpu implements ModInitializer {
                                                         IntegerArgumentType.getInteger(context, "m"),
                                                         IntegerArgumentType.getInteger(context, "k"),
                                                         IntegerArgumentType.getInteger(context, "n")))))))
+                .then(Commands.literal("bigadd")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        // Defaults to one chunk (16*16*384). The upper bound is a
+                        // memory bound, not a device bound: the call holds both
+                        // inputs and the output at once, 12 bytes per element, so
+                        // 2M elements is ~24 MB inside the game process.
+                        .executes(context -> runBigAdd(context, 98304))
+                        .then(Commands.argument("total", IntegerArgumentType.integer(1024, 2_000_000))
+                                .executes(context -> runBigAdd(context,
+                                        IntegerArgumentType.getInteger(context, "total")))))
                 .then(Commands.literal("terrain")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> runTerrainTest(context, 1))
