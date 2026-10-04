@@ -758,6 +758,12 @@ public final class McJavaNpu implements ModInitializer {
                             + " available=" + available + " device=" + NpuRuntime.getDeviceInfo()), false);
                     return available ? 1 : 0;
                 }))
+                .then(Commands.literal("inprocess").executes(context -> {
+                    String r = NpuInProcessProbe.run();
+                    context.getSource().sendSuccess(() -> Component.literal("[NPU] inprocess: " + r), false);
+                    NpuLog.log("[NPU] inprocess: " + r);
+                    return NpuInProcessProbe.isReady() ? 1 : 0;
+                }))
                 .then(Commands.literal("test").requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER)).executes(context -> {
                     NpuRuntime.TestResult result = NpuRuntime.test();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] test=" + result.name()
