@@ -91,7 +91,7 @@ public final class NpuRuntime {
 
     /** INT8 quantized matmul - the path that actually runs at HTP speed. */
     public static String matMulInt8(int m,int k,int n){
-        if(!isAvailable()) return "ERR MCNPU_OFFLINE "+getDeviceInfo();
+        if(!NpuServiceClient.healthy()) return "ERR MCNPU_OFFLINE "+NpuServiceClient.lastFailure();
         return NpuServiceClient.matMulInt8(m,k,n);
     }
 
@@ -105,7 +105,7 @@ public final class NpuRuntime {
      * to the HTP and the raw int8 result comes back. Use scaleC to dequantize.
      */
     public static MatMulResult submitMatMulInt8(byte[] a,byte[] b,int m,int k,int n){
-        if(!isAvailable()) return new MatMulResult(0,null,0,"MCNPU_OFFLINE "+getDeviceInfo());
+        if(!NpuServiceClient.healthy()) return new MatMulResult(0,null,0,"MCNPU_OFFLINE "+NpuServiceClient.lastFailure());
         NpuServiceClient.MatMulResult r = NpuServiceClient.submitBinMatMul8(a,b,m,k,n);
         return new MatMulResult(r.scaleC(), r.c(), r.us(), r.error());
     }
