@@ -117,6 +117,25 @@ public final class NpuAutoProbe {
             sb.append("\nflush failed: ").append(t);
         }
 
+        // The flush above is unconditional, so it also dropped the graph boot's
+        // warmup had just built for the light path. Measured in the field:
+        // warmup built 128x512x512 at 11:40:20, the sweep flushed it at
+        // 11:40:25, and the next real lightapply paid a cold rebuild -
+        // 399674us, eight ticks of stall, for a result that changed nothing.
+        // Rebuild here so production starts hot instead of paying for our own
+        // diagnostics. Verification stays off: this is a graph build, not a
+        // measurement, and the host reference is pure cost on the calling thread.
+        try {
+            if (NpuConfig.get().enabled && NpuConfig.get().autoWarmup) {
+                long t0 = System.nanoTime();
+                NpuLightAccel.Result rw = NpuLightAccel.propagate(NpuConfig.get().lightBatch);
+                long ms = (System.nanoTime() - t0) / 1000000L;
+                sb.append("\nrewarm: ").append(rw.summary()).append(" wall_ms=").append(ms);
+            }
+        } catch (Throwable t) {
+            sb.append("\nrewarm failed: ").append(t);
+        }
+
         finish(sb);
 
         // 4. Keep a readable heartbeat for long sessions.

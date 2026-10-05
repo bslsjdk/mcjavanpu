@@ -141,13 +141,24 @@ public final class NpuBench {
     /** Sweeps the shapes this project actually cares about. Run off-thread. */
     public static String sweep() {
         StringBuilder sb = new StringBuilder("NPU bench sweep (each: 1 warmup + 5 measured)");
+        // The last entry is the shape the light path actually submits in
+        // production: lightBatch x cells x cells (128x512x512 by default).
+        //
+        // It was missing, and that made the sweep actively misleading. Every
+        // generic shape below measures an execSpeedup between 0.01x and 0.08x -
+        // the device loses badly - but not one of them is a shape the game ever
+        // asks for. The single shape production uses was only ever measured by
+        // warmup, and there it wins: npu_us=18950 against cpu_us=88066, 4.65x,
+        // bad=0. A sweep that never measures the production shape cannot say
+        // whether the feature is worth running, so it measures it now.
+        int lb = Math.max(128, NpuConfig.get().lightBatch);
         int[][] shapes = {
             {128, 8, 8},
             {128, 16, 16},
             {256, 16, 16},
             {1024, 8, 8},
             {4096, 4, 1},
-            {16384, 4, 1},
+            {lb, 512, 512},
         };
         for (int[] s : shapes) {
             Result r = run(s[0], s[1], s[2], 1, 5);
