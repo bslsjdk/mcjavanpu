@@ -93,6 +93,12 @@ public final class NpuAutoProbe {
             return;
         }
 
+        // Everything from here to the re-warm is calibration: synthetic shapes the game
+        // never submits, graph builds, and a CPU reference on the calling thread. None of
+        // it describes production cost, so none of it may feed the guard - and the re-warm
+        // at the end must not be refused, or the flush below leaves production cold.
+        NpuGuard.setCalibrating(true);
+
         // 2. Shape analysis. This is the one that catches a shape that is
         //    silently wasting most of its work on padding.
         try {
@@ -134,6 +140,8 @@ public final class NpuAutoProbe {
             }
         } catch (Throwable t) {
             sb.append("\nrewarm failed: ").append(t);
+        } finally {
+            NpuGuard.setCalibrating(false);
         }
 
         finish(sb);
