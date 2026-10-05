@@ -37,6 +37,8 @@ public final class NpuTerrainLock {
      * never ours to lose. Mixing the two would hide a dead pipeline behind normal terrain.
      */
     private static final AtomicLong VANILLA_FALLBACKS = new AtomicLong();
+    /** How many were already reported when the last line went out, so a line can say "+N more". */
+    private static long lastLoggedFallback;
 
     private NpuTerrainLock() {}
 
@@ -126,7 +128,20 @@ public final class NpuTerrainLock {
         if (n == 1) {
             NpuLog.warn(msg);
         } else {
-            NpuLog.throttledWarn("takeover-fallback", NpuLog.DEFAULT_THROTTLE_MS, msg);
+            // Once per 30 s, not once per second.
+            //
+            // Field log 2026-10-05: the guard degraded during boot and stayed degraded, so
+            // every one of ~26,000 chunks reached here with the identical reason. At the
+            // default 1 s throttle that is a warning line every second for the whole
+            // session - tens of thousands of lines that all say the same thing, written
+            // from the chunk generation path. The first line already carries the reason;
+            // the rest only need to show that it is still happening and how many times.
+            long since = n - lastLoggedFallback;
+            if (NpuLog.throttledWarn("takeover-fallback", 30_000L, msg)) {
+                lastLoggedFallback = n;
+                NpuLog.warn("takeover-fallback: +" + since
+                        + " more chunks since the last line (total " + n + ")");
+            }
         }
     }
 
