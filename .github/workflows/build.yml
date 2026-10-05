@@ -31,10 +31,11 @@ jobs:
       - name: Build Fabric mod
         run: gradle build --no-daemon
 
-      # The account's Actions storage quota is exhausted for this billing cycle and the
-      # metered usage does not go back down when artifacts are deleted, so this upload is
-      # expected to fail until the cycle resets. It stays - it is the normal delivery route
-      # once the quota returns - but it must not turn a green build red.
+      # Actions artifact upload still fails while the account's metered storage is
+      # exhausted (it resets around 2026-11-01 and deleting artifacts does not lower
+      # metered usage). continue-on-error keeps it from turning a green build red, but
+      # note it also masks the failure: the step reports success even when the artifact
+      # was never created. Do not read this step as "the jar is downloadable".
       - name: Upload mod
         uses: actions/upload-artifact@v4
         continue-on-error: true
@@ -45,13 +46,24 @@ jobs:
           overwrite: true
           retention-days: 3
 
-      # Deliver the jar through git instead, which does not draw on Actions storage.
-      # One file, force-pushed, so the branch never grows a history of old builds.
-      - name: Publish jar to the builds branch
+      # The real delivery route. Release assets are not metered against Actions storage,
+      # so this works even when the artifact upload above is rejected. Rolling tag, one
+      # asset, replaced every build.
+      - name: Publish jar release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
           JAR=$(ls build/libs/*.jar | head -1)
           test -f "$JAR"
+          gh release delete latest-jar --yes --cleanup-tag || true
+          gh release create latest-jar "$JAR"             --prerelease             --title "mcjavanpu latest build"             --notes "Auto-published build of ${GITHUB_SHA}. Permanent download link that does not depend on Actions storage."
+
+      # Kept as a second route: git-based, also outside Actions storage.
+      - name: Publish jar to the builds branch
+        run: |
+          set -eux
+          JAR=$(ls build/libs/*.jar | head -1)
           git config user.name ci
           git config user.email ci@local
           git checkout -B builds
