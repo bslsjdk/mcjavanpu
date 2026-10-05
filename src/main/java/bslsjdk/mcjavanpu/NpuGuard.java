@@ -60,9 +60,40 @@ public final class NpuGuard {
     private static final int WARMUP_CALLS = 24;
     private static int observed;
 
-    /** Above this, one call is not worth it for a per-frame feature. */
-    private static volatile long budgetUs = 8_000L;   // 8 ms
+    /**
+     * Above this median, a call is not worth paying for.
+     *
+     * The old default of 8 ms was below the measured steady cost of the shape the game
+     * actually uses. Field log 2026-10-05: the light path submits m=128 k=512 n=512 and
+     * the service reports npu_service_us of 5490 / 6037 / 8028 / 9949 / 10005 / 10111 for
+     * it - a median near 9 ms - while the budget was 8 ms. The guard therefore tripped on
+     * a median of 8624us against an 8000us budget, i.e. it condemned a path for costing
+     * what it costs. A tick is 50 ms, so 20 ms still leaves the caller well inside a
+     * frame, and it is above the real cost instead of barely under it.
+     *
+     * Configurable because the right number depends on which shapes a world uses.
+     */
+    private static volatile long budgetUs = 20_000L;   // 20 ms
     private static volatile int failBudget = 3;
+
+    /**
+     * True while we are deliberately measuring or rebuilding rather than producing.
+     *
+     * Warm-up, the bench sweep and the post-flush re-warm all submit on purpose. Their
+     * timings are dominated by graph construction and by CPU reference work that production
+     * never pays, so they say nothing about steady-state cost - and worse, they can trip
+     * the guard, which then blocks the very re-warm that would restore the hot graph.
+     *
+     * Field log 2026-10-05: warm-up and boot put 13 samples into the window with a median
+     * of 8624us and a p99 of 99554us, the guard degraded, and `rewarm: FAILED
+     * GUARD_DEGRADED` followed. The flush had just dropped the production graph, so every
+     * later probe paid a cold rebuild of ~99 ms, which is far over budget, which kept the
+     * guard degraded. 26,000+ chunks then went to vanilla and the NPU was never used.
+     *
+     * Marking calibration explicitly is stronger than skipping the first N calls: the
+     * caller knows what it is doing, and calibration calls must never be refused.
+     */
+    private static volatile boolean calibrating;
 
     private static volatile boolean degraded;
     private static volatile String reason = "";
@@ -84,8 +115,24 @@ public final class NpuGuard {
     public static String reason() { return reason; }
 
     /** Ask whether an NPU call is currently advisable. Cheap: no IPC, no lock contention. */
+    /** Mark a stretch of deliberate measurement or rebuilding. Always paired with a reset. */
+    public static void setCalibrating(boolean on) {
+        calibrating = on;
+        if (on) {
+            // Start the health window empty so the first production samples after
+            // calibration are judged on their own, not alongside cold builds.
+            synchronized (LOCK) { filled = 0; cursor = 0; }
+        }
+    }
+
+    public static boolean isCalibrating() { return calibrating; }
+
     public static boolean allow() {
         if (!NpuConfig.get().guardEnabled) return true;
+        // Calibration submits on purpose and must never be refused. Refusing them is what
+        // left the production graph unrebuilt after a flush, and an unrebuilt graph keeps
+        // every later probe cold, which keeps the guard tripped.
+        if (calibrating) return true;
         if (!degraded) return true;
         // Let one probe through now and then, so a recovered service is noticed.
         long now = System.currentTimeMillis();
@@ -118,6 +165,10 @@ public final class NpuGuard {
         // between. Streaks are cleared by recovery instead, which is the point at which we
         // have actually re-established that the path works.
         if (!NpuConfig.get().guardEnabled) return;
+        // Calibration timings are not evidence about production cost. Letting them in is
+        // what degraded the guard at boot on 2026-10-05 and disabled the NPU for the
+        // whole session.
+        if (calibrating) return;
 
         // A call that came back inside budget is evidence the path works; take that as a reason to
         // recover rather than staying degraded until an arbitrary timeout. Without this, a single
