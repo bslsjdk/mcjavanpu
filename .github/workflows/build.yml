@@ -54,8 +54,9 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           set -eux
-          JAR=$(ls build/libs/*.jar | head -1)
+          JAR=$(ls build/libs/*.jar | grep -v -E -- '-(sources|javadoc)\.jar$' | head -1)
           test -f "$JAR"
+          echo "publishing $JAR"
           gh release delete latest-jar --yes --cleanup-tag || true
           gh release create latest-jar "$JAR"             --prerelease             --title "mcjavanpu latest build"             --notes "Auto-published build of ${GITHUB_SHA}. Permanent download link that does not depend on Actions storage."
 
@@ -63,7 +64,7 @@ jobs:
       - name: Publish jar to the builds branch
         run: |
           set -eux
-          JAR=$(ls build/libs/*.jar | head -1)
+          JAR=$(ls build/libs/*.jar | grep -v -E -- '-(sources|javadoc)\.jar$' | head -1)
           git config user.name ci
           git config user.email ci@local
           git checkout -B builds
