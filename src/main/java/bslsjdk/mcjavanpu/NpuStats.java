@@ -25,8 +25,41 @@ public final class NpuStats {
         public final AtomicLong lastCells = new AtomicLong();
         public final AtomicLong lastNpuUs = new AtomicLong();
 
+        /**
+         * Outcome split. Without it "calls" is unreadable: a path can be called 180000 times
+         * and have done nothing at all, and a single count cannot tell that apart from a path
+         * that served every chunk.
+         *
+         *   attempts   - the hook was reached
+         *   gated      - short-circuited before any submission could happen (gate, config, mode)
+         *   submitted  - a request actually reached the device
+         *   served     - a result was written back into the game
+         *
+         * gated == attempts means the path is pure overhead. submitted > 0 with served == 0
+         * means the device answered but the result never landed.
+         */
+        public final AtomicLong attempted = new AtomicLong();
+        public final AtomicLong gated = new AtomicLong();
+        public final AtomicLong submitted = new AtomicLong();
+        public final AtomicLong served = new AtomicLong();
+
         Feature(String key, String label, boolean defaultOn) {
             this.key = key; this.label = label; this.defaultOn = defaultOn; this.enabled = defaultOn;
+        }
+
+        /** Counts an attempt that was short-circuited before the device could be involved. */
+        public void recordGated() {
+            attempted.incrementAndGet();
+            gated.incrementAndGet();
+            calls.incrementAndGet();
+        }
+
+        /** Counts an attempt that reached the device and produced a usable result. */
+        public void recordServed(long cells, long npuUs, long hostUs) {
+            attempted.incrementAndGet();
+            submitted.incrementAndGet();
+            served.incrementAndGet();
+            record(cells, npuUs, hostUs);
         }
 
         public void record(long cells, long npuUs, long hostUs) {
@@ -44,10 +77,18 @@ public final class NpuStats {
             return h / (double) n;
         }
 
+        /**
+         * The outcome fields are the point of this line. "npu=0.0ms" used to be read as
+         * "the device never ran", but the field was simply never filled in - the real work
+         * happens on a worker thread whose timings never reached here. A timing that is
+         * never assigned looks identical to a path that never executed, and the difference
+         * decides whether to delete the path or fix it.
+         */
         public String line() {
-            return String.format(Locale.ROOT, "%s %-6s calls=%-6d cells=%-10d npu=%7.1fms host=%7.1fms x%.2f",
-                    enabled ? "[on ]" : "[off]", label, calls.get(), cells.get(),
-                    npuUs.get() / 1000.0, hostUs.get() / 1000.0, speedup());
+            return String.format(Locale.ROOT,
+                    "%s %-6s calls=%-6d served=%-6d submitted=%-6d gated=%-6d cells=%-10d npu=%7.1fms host=%7.1fms x%.2f",
+                    enabled ? "[on ]" : "[off]", label, calls.get(), served.get(), submitted.get(),
+                    gated.get(), cells.get(), npuUs.get() / 1000.0, hostUs.get() / 1000.0, speedup());
         }
     }
 
