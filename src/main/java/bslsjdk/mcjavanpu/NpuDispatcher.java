@@ -132,12 +132,29 @@ public final class NpuDispatcher {
             // total over budget means the whole request needs splitting. Reporting
             // only the dimension cap sent the light path looking in the wrong place.
             int pm = planDimension(mActual), pk = planDimension(kActual), pn = planDimension(nActual);
+            // Name each tensor's element count explicitly.
+            //
+            // "a=262144" on its own is ambiguous and sends the next person to pad the wrong
+            // dimension: A is m*k, so for 128x512x512 it is 65536, while 262144 is B (k*n) or,
+            // with other shapes, could be C (m*n). Only m*k involves m, so if the reported count
+            // is k*n then changing m's padding cannot possibly fix it. The budget is on the SUM
+            // of all three, which is why a total is reported alongside the parts.
+            final String shapes = " m=" + mActual + " k=" + kActual + " n=" + nActual
+                    + " plan=" + pm + "x" + pk + "x" + pn
+                    + " aEle(m*k)=" + ((long) pm * pk)
+                    + " bEle(k*n)=" + ((long) pk * pn)
+                    + " cEle(m*n)=" + ((long) pm * pn);
             if (pm > 0 && pk > 0 && pn > 0 && totalElements(pm, pk, pn) > MAX_TOTAL_ELEMENTS) {
-                return err("SHAPE_OVER_BUDGET plan=" + pm + "x" + pk + "x" + pn
-                        + " elements=" + totalElements(pm, pk, pn)
+                NpuLog.throttledWarn("shape-over-budget", NpuLog.DEFAULT_THROTTLE_MS,
+                        "SHAPE_OVER_BUDGET" + shapes + " total=" + totalElements(pm, pk, pn)
+                        + " budget=" + MAX_TOTAL_ELEMENTS + " (split the batch)");
+                return err("SHAPE_OVER_BUDGET" + shapes
+                        + " total=" + totalElements(pm, pk, pn)
                         + " budget=" + MAX_TOTAL_ELEMENTS + " (split the batch)");
             }
-            return err("SHAPE_UNSUPPORTED m=" + mActual + " k=" + kActual + " n=" + nActual
+            NpuLog.throttledWarn("shape-unsupported", NpuLog.DEFAULT_THROTTLE_MS,
+                    "SHAPE_UNSUPPORTED" + shapes + " (native max " + MM_MAX + "; split the batch)");
+            return err("SHAPE_UNSUPPORTED" + shapes
                     + " (native max " + MM_MAX + "; split the batch)");
         }
         int m = sh[0], k = sh[1], n = sh[2];
