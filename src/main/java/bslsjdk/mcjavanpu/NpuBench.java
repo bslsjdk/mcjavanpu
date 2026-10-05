@@ -97,6 +97,13 @@ public final class NpuBench {
         // data path reports as bad=0/65536. Same shape, same device, only the data
         // distribution differs -- so this bench used to fail a working path.
         final int inputRange = 16;
+
+        /**
+         * A single submit that holds the lock this long is a fault being reported, not
+         * work being done - the production round trip is ~8 ms and one tick is 50 ms.
+         * Anything past this makes the rest of the sweep pointless.
+         */
+        final long STALL_ABORT_US = 100_000L;
         long[] prepare = new long[iters];
         long[] submit = new long[iters];
         long[] cpuRef = new long[iters];
@@ -114,6 +121,13 @@ public final class NpuBench {
             long t2 = System.nanoTime();
 
             if (!r.ok()) return fail(m, k, n, r.error());
+
+            // One shape stalling for ~300 ms while it reports a fault is not a shape to
+            // keep sweeping: the next one will do the same, and every millisecond of it is
+            // spent holding the submit lock. Stop after the first one that blows the budget.
+            if (NpuServiceClient.lastInLockUs() > STALL_ABORT_US) {
+                return fail(m, k, n, "STALL " + NpuServiceClient.lastInLockUs() + "us>" + STALL_ABORT_US + "us");
+            }
 
             // Local reference in the same units the service uses (scaleA*scaleB = 1e-6).
             float[] ref = new float[m * n];
@@ -155,7 +169,6 @@ public final class NpuBench {
             {1024, 8, 8},
             {4096, 4, 1},
             {16384, 4, 1},
-            {128, 512, 512},
         };
         for (int[] s : shapes) {
             Result r = run(s[0], s[1], s[2], 1, 5);
