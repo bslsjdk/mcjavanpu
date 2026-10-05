@@ -72,6 +72,22 @@ public final class NpuConfig {
     /** vanilla | npu | assist */
     public String chunkMode = "assist";
 
+    /**
+     * Per-frame visibility transform through the NPU.
+     *
+     * Off by default, on purpose. This is the one path that runs *every frame*, and the
+     * arithmetic does not favour it: a call costs roughly 2.5ms of device time plus ~3ms
+     * waiting on the client's bytes, and it moves up to ~512KB per frame to replace work the
+     * CPU does in well under a millisecond (a few hundred 4x4 point transforms). Spending
+     * ~6ms of a 16.7ms frame to save ~0.1ms is a net loss, and it is paid on exactly the
+     * frames the user notices.
+     *
+     * It used to be gated by the chunk switch, so anyone turning chunk work on also turned a
+     * per-frame NPU round trip on without asking for it. Separated so the two can be judged
+     * separately, and left selectable for anyone who wants to re-measure it.
+     */
+    public boolean renderAssist = false;
+
     /** Canonical three-way modes. */
     public static final String[] MODES = {"vanilla", "npu", "assist"};
 
@@ -135,6 +151,7 @@ public final class NpuConfig {
             // loading. It stays selectable for anyone who wants to keep measuring.
             lightMode = pr.getProperty("lightMode", "vanilla");
             chunkMode = pr.getProperty("chunkMode", "assist");
+            renderAssist = Boolean.parseBoolean(pr.getProperty("renderAssist", "false"));
             for (String k : pr.stringPropertyNames()) {
                 if (!k.startsWith("worldLock.")) continue;
                 try {
@@ -165,6 +182,7 @@ public final class NpuConfig {
             pr.setProperty("lightFoldRadius", String.valueOf(lightFoldRadius));
             pr.setProperty("lightMode", lightMode);
             pr.setProperty("chunkMode", chunkMode);
+            pr.setProperty("renderAssist", String.valueOf(renderAssist));
             for (java.util.Map.Entry<Long, String> e : worldLocks.entrySet()) {
                 if (e.getValue() != null) pr.setProperty("worldLock." + e.getKey(), e.getValue());
             }
@@ -190,6 +208,7 @@ public final class NpuConfig {
             case "lightFoldRadius": lightFoldRadius = (lightFoldRadius + 1) % 5; break;
             case "lightMode": lightMode = nextMode(lightMode); break;
             case "chunkMode": chunkMode = nextMode(chunkMode); break;
+            case "renderAssist": renderAssist = !renderAssist; break;
             default: return;
         }
         save();
@@ -203,6 +222,7 @@ public final class NpuConfig {
                 + " guardEnabled=" + guardEnabled
                 + " lightBatch=" + lightBatch
                 + " lightFoldRadius=" + lightFoldRadius
-                + " lightMode=" + lightMode + " chunkMode=" + chunkMode;
+                + " lightMode=" + lightMode + " chunkMode=" + chunkMode
+                + " renderAssist=" + renderAssist;
     }
 }

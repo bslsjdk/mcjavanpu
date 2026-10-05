@@ -27,8 +27,14 @@ import java.util.Locale;
  */
 public final class NpuTerrainLattice {
 
-    /** Tensor element budget reported by the service (CAPABILITIES max_elements). */
-    public static final int MAX_ELEMENTS = 16384;
+    /**
+     * Tensor element budget reported by the service (CAPABILITIES max_elements).
+     *
+     * Was 16384, which is what the service used to report before the shape probe could finish;
+     * the device has since reported 65536 consistently. Keeping the stale number silently
+     * quartered the batch size, and batch size is the one thing this path is tuned around.
+     */
+    public static final int MAX_ELEMENTS = 65536;
 
     /**
      * Lattice spacing.
@@ -138,7 +144,7 @@ public final class NpuTerrainLattice {
      */
     public static int chunksForSubmissions(int sx, int sy, int sz, int submissions) {
         int pts = latticePoints(sx, sy, sz);
-        int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+        int rowsPerSubmit = NpuDispatcher.maxRowsFor(K, 1);
         return Math.max(1, (submissions * rowsPerSubmit) / pts);
     }
 
@@ -197,7 +203,7 @@ public final class NpuTerrainLattice {
         boolean usedNpu = false;
         long npuUs = 0;
         String note = "";
-        int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+        int rowsPerSubmit = NpuDispatcher.maxRowsFor(K, 1);
         int done = 0;
         while (done < pts) {
             int rows = Math.min(rowsPerSubmit, pts - done);
@@ -307,7 +313,7 @@ public final class NpuTerrainLattice {
         // boundaries fixes the second half: a chunk's tail (1225 - 1024 = 201 rows) would
         // otherwise ride alone and pay a full round trip for a fifth of a payload. Merged
         // across chunks, two chunks cost three submissions instead of four.
-        final int rowsPerSubmit = Math.max(1, MAX_ELEMENTS / K);
+        final int rowsPerSubmit = NpuDispatcher.maxRowsFor(K, 1);
 
         // Prepare in bounded blocks so peak memory does not scale with the whole batch.
         final int prepRowsCap = Math.max(rowsPerSubmit, 8192);

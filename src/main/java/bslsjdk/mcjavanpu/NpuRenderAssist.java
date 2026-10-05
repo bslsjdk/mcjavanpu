@@ -29,8 +29,15 @@ public final class NpuRenderAssist {
     private static final int CORNERS = 8;
     /** Largest number of boxes pushed through the NPU in one frame. */
     private static final int MAX_BOXES = 512;
-    /** If the last frame took longer than this, do not add NPU work to it. */
-    private static final long SLOW_FRAME_US = 22_000;
+    /**
+     * If the last frame took longer than this, do not add NPU work to it.
+     *
+     * One 60fps frame is 16.7ms. A call here costs ~2.5ms of device time plus ~3ms waiting on
+     * the client's bytes, so on a frame that has already blown its budget it converts a slow
+     * frame into a slower one. 22ms was measured against a 30fps target and let the pass run on
+     * frames that were already failing 60fps.
+     */
+    private static final long SLOW_FRAME_US = 16_000;
 
     private static final AtomicLong FRAMES = new AtomicLong();
     private static final AtomicLong NPU_FRAMES = new AtomicLong();
@@ -65,7 +72,10 @@ public final class NpuRenderAssist {
 
         NpuConfig cfg = NpuConfig.get();
         if (cfg == null || !cfg.enabled) return null;
-        if (!NpuStats.CHUNK.enabled) return null;   // the chunk switch doubles as the render switch
+        // Was gated by the chunk switch, which meant enabling chunk work silently turned on a
+        // per-frame NPU round trip. Visibility costs ~6ms/frame to replace well under 1ms of CPU
+        // work, so it needs its own switch - and that switch defaults off.
+        if (!cfg.renderAssist) return null;
         if (lastFrameUs > SLOW_FRAME_US) return null;
         if (!NpuServiceClient.isAvailable()) return null;
 

@@ -64,11 +64,37 @@ public final class NpuDispatcher {
      * would blow the heap before the service ever saw it. Proven working shapes are
      * ~400k, so the ceiling sits far above that and the terrain path keeps its own
      * tighter limit where it actually wants one.
+     *
+     * Raised from 1<<20 after the terrain path hit it: 16384x32x32 needs 1049600,
+     * which is 1024 elements - 0.098% - over 1048576, and was refused for that.
+     * The ceiling is a heap guard, not a device limit, and ~1MB of byte[] is not
+     * what it exists to stop; 1<<21 keeps the guard while letting real shapes through.
      */
-    public static final long MAX_TOTAL_ELEMENTS = 1L << 20;
+    public static final long MAX_TOTAL_ELEMENTS = 1L << 21;
 
     public static long totalElements(int m, int k, int n) {
         return (long) m * k + (long) k * n + (long) m * n;
+    }
+
+    /**
+     * Largest row count that still plans, for a fixed (kActual, nActual).
+     *
+     * Callers used to derive this themselves from a constant (MAX_ELEMENTS / k), which is wrong
+     * in two ways at once: the constant drifted away from what the service reports, and the row
+     * count is not what the budget actually constrains - the *planned* shape is. A 16384-row
+     * request with k=16, n=1 plans to 16384x32x32, whose three tensors sum to 1049600 elements,
+     * i.e. 1024 over the old 1<<20 ceiling: over budget by less than 0.1%, and refused outright.
+     *
+     * Asking the planner removes both. It is a short binary search over the bucket ladder, run
+     * once per shape, so it costs nothing on the hot path.
+     */
+    public static int maxRowsFor(int kActual, int nActual) {
+        int best = 0;
+        for (int b : MM_BUCKETS) {
+            if (b > MM_MAX) break;
+            if (planShape(b, kActual, nActual) != null) best = b;
+        }
+        return best > 0 ? best : Math.max(1, M_MIN);
     }
 
     public static int[] planShape(int mActual, int kActual, int nActual) {
