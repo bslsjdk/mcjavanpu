@@ -110,7 +110,7 @@ public abstract class DensitySamplerMixin {
             // is the whole point: an assist that can stall is worse than no assist.
             float[] prepared = NpuTerrainAssist.take(cx, cz, sx, sy, sz, oy);
             if (prepared == null) {
-                NpuStats.BLOCKS.record(0, 0, 0);
+                NpuStats.BLOCKS.recordGated();
                 return;
             }
             // Assist is not automatically safe. A cache hit here still replaces the
@@ -118,14 +118,14 @@ public abstract class DensitySamplerMixin {
             // through the same gate as takeover. When the gate refuses we do NOT
             // cancel, and vanilla generates the chunk exactly as it always would.
             if (!NpuTerrainGate.allowWrite(cx, cz, prepared, buffer.size())) {
-                NpuStats.BLOCKS.record(0, 0, 0);
+                NpuStats.BLOCKS.recordGated();
                 return;
             }
             int n = Math.min(buffer.size(), prepared.length);
             long t0 = System.nanoTime();
             for (int i = 0; i < n; i++) buffer.set(i, prepared[i]);
             long us = (System.nanoTime() - t0) / 1000;
-            NpuStats.BLOCKS.record(n, 0, us);
+            NpuStats.BLOCKS.recordServed(n, NpuTerrainAssist.lastPreparedNpuUs(), us);
             ci.cancel();
             return;
         }
@@ -147,7 +147,7 @@ public abstract class DensitySamplerMixin {
         // advance. Decide now and let vanilla generate.
         if (NpuGuard.isDegraded()) {
             handleMissing(buffer, ci, "guard degraded: " + NpuGuard.reason());
-            NpuStats.BLOCKS.record(0, 0, 0);
+            NpuStats.BLOCKS.recordGated();
             return;
         }
 
@@ -157,7 +157,7 @@ public abstract class DensitySamplerMixin {
             // The pipeline will not produce anything at all, so waiting would only stall for
             // the full timeout and end up here anyway.
             handleMissing(buffer, ci, "pipeline refused to compute: " + NpuTerrainGate.lastReason());
-            NpuStats.BLOCKS.record(0, 0, 0);
+            NpuStats.BLOCKS.recordGated();
             return;
         }
 
@@ -216,7 +216,7 @@ public abstract class DensitySamplerMixin {
 
         if (mine != null && !NpuTerrainGate.allowWrite(cx, cz, mine, buffer.size())) {
             handleMissing(buffer, ci, "gate rejected: " + NpuTerrainGate.lastReason());
-            NpuStats.BLOCKS.record(0, 0, 0);
+            NpuStats.BLOCKS.recordGated();
             return;
         }
 
@@ -224,13 +224,13 @@ public abstract class DensitySamplerMixin {
             int n = Math.min(buffer.size(), mine.length);
             for (int i = 0; i < n; i++) buffer.set(i, mine[i]);
             NpuTerrainAssist.countTakeoverServed();
-            NpuStats.BLOCKS.record(n, 0, 0);
+            NpuStats.BLOCKS.recordServed(n, NpuTerrainAssist.lastPreparedNpuUs(), 0L);
             ci.cancel();
             return;
         }
 
         handleMissing(buffer, ci, "no NPU volume within " + (TAKEOVER_WAIT_NS / 1_000_000L) + "ms");
-        NpuStats.BLOCKS.record(0, 0, 0);
+        NpuStats.BLOCKS.recordGated();
     }
 
     /**
