@@ -63,6 +63,18 @@ public final class NpuTerrainVanilla {
 
     public static boolean ready() { return tree != null; }
 
+    /**
+     * Noise channels the lowered program evaluates, or -1 when there is no program.
+     *
+     * The baseline needs this to turn a per-evaluation cost into a per-section cost. It is
+     * read from the program rather than guessed, but the program only exists once the tree
+     * builds, so callers still need a fallback - and have to say which one they used.
+     */
+    public static int programNoiseCount() {
+        NpuDfProgram p = program;
+        return p == null ? -1 : p.theNoises().length;
+    }
+
     public static String summary() {
         long n = SAMPLES.get();
         return "vanilla_tree=" + (tree != null ? "ready" : "no(" + failReason + ")")

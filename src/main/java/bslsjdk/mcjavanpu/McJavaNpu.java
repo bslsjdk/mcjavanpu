@@ -785,7 +785,7 @@ public final class McJavaNpu implements ModInitializer {
 
     private static void registerCommands(CommandDispatcher<CommandSourceStack> dispatcher) {
         dispatcher.register(Commands.literal("npu")
-                .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark"), false); return 1; })
+                .executes(context -> { context.getSource().sendSuccess(() -> Component.literal("[NPU] /npu status|test|addtest|benchmark|noisebaseline"), false); return 1; })
                 .then(Commands.literal("status").executes(context -> {
                     boolean available = NpuRuntime.isAvailable();
                     context.getSource().sendSuccess(() -> Component.literal("[NPU] runtime=" + NpuRuntime.isInitialized()
@@ -865,6 +865,28 @@ public final class McJavaNpu implements ModInitializer {
                         .then(Commands.argument("total", IntegerArgumentType.integer(1024, 2_000_000))
                                 .executes(context -> runBigAdd(context,
                                         IntegerArgumentType.getInteger(context, "total")))))
+                .then(Commands.literal("noisebaseline")
+                        .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
+                        // Runs off the server thread: a million noise evaluations is seconds of
+                        // work, and blocking the tick loop for it would be a stall rather than a
+                        // measurement. The result goes to the log, not to chat, because the
+                        // worker outlives the command and touching CommandSourceStack from it
+                        // would mean writing chat from a thread the game does not own.
+                        .executes(context -> {
+                            NpuNoiseBaseline.runAsync(NpuNoiseBaseline.DEFAULT_CALLS);
+                            context.getSource().sendSuccess(() -> Component.literal(
+                                    "[NPU] noise baseline started (" + NpuNoiseBaseline.DEFAULT_CALLS
+                                            + " evals) - result goes to the log"), false);
+                            return 1;
+                        })
+                        .then(Commands.argument("calls", IntegerArgumentType.integer(2000, 5_000_000))
+                                .executes(context -> {
+                                    NpuNoiseBaseline.runAsync(
+                                            IntegerArgumentType.getInteger(context, "calls"));
+                                    context.getSource().sendSuccess(() -> Component.literal(
+                                            "[NPU] noise baseline started - result goes to the log"), false);
+                                    return 1;
+                                })))
                 .then(Commands.literal("terrain")
                         .requires(s -> s.permissions().hasPermission(Permissions.COMMANDS_GAMEMASTER))
                         .executes(context -> runTerrainTest(context, 1))
