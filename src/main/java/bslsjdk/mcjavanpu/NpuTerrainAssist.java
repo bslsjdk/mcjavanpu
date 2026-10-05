@@ -79,10 +79,28 @@ public final class NpuTerrainAssist {
     private static final class Prepared {
         final float[] density;
         final int sx, sy, sz;
-        Prepared(float[] density, int sx, int sy, int sz) {
-            this.density = density; this.sx = sx; this.sy = sy; this.sz = sz;
+        /**
+         * Device time that produced this volume, in microseconds.
+         *
+         * It has to travel with the result. The work happens on the worker thread, so anything
+         * measured there is invisible to the game thread that later consumes the volume - which
+         * is exactly how BLOCKS ended up reporting npu=0.0ms for 180000 calls while the device
+         * had been running all along.
+         */
+        final long npuUs;
+        Prepared(float[] density, int sx, int sy, int sz, long npuUs) {
+            this.density = density; this.sx = sx; this.sy = sy; this.sz = sz; this.npuUs = npuUs;
         }
     }
+
+    /** Device time of the most recently consumed volume. Read by the density hook for accounting. */
+    private static volatile long lastPreparedNpuUs;
+
+    public static long lastPreparedNpuUs() { return lastPreparedNpuUs; }
+
+    /** Device time per chunk for takeover volumes, which are cached as bare float arrays. */
+    private static final java.util.concurrent.ConcurrentHashMap<Long, Long> NPU_US_BY_KEY =
+            new java.util.concurrent.ConcurrentHashMap<>();
 
     private static final Map<Long, Prepared> CACHE = new ConcurrentHashMap<>();
     private static final ArrayBlockingQueue<Long> REQUESTED = new ArrayBlockingQueue<>(QUEUE_CAP);
@@ -261,8 +279,12 @@ public final class NpuTerrainAssist {
                     continue;
                 }
 
+                // The batch shares one device call, so its cost is split across the chunks it
+                // produced. Attributing the whole batch to every chunk would inflate the NPU
+                // time n-fold and make the speedup look far worse than it is.
+                final long perChunkNpuUs = n > 0 ? (npuUs[0] / n) : 0L;
                 for (int i = 0; i < n; i++) {
-                    CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ));
+                    CACHE.put(keys.get(i), new Prepared(vols[i], DEF_SX, DEF_SY, DEF_SZ, perChunkNpuUs));
                     if (!CACHE_ORDER.offer(keys.get(i))) CACHE_ORDER.poll();
                     IN_FLIGHT.remove(keys.get(i));
                 }
@@ -323,9 +345,15 @@ public final class NpuTerrainAssist {
      * ~393 KB as floats, so a large takeover cache would be hundreds of megabytes.
      */
     public static void put(int cx, int cz, int minY, float[] vol) {
+        put(cx, cz, minY, vol, 0L);
+    }
+
+    public static void put(int cx, int cz, int minY, float[] vol, long npuUs) {
         if (vol == null || vol.length != DEF_SX * DEF_SY * DEF_SZ) return;
-        if (TAKEOVER_CACHE.size() >= TAKEOVER_CAP) TAKEOVER_CACHE.clear();
-        TAKEOVER_CACHE.put(key(cx, cz, minY), vol);
+        if (TAKEOVER_CACHE.size() >= TAKEOVER_CAP) { TAKEOVER_CACHE.clear(); NPU_US_BY_KEY.clear(); }
+        long k = key(cx, cz, minY);
+        TAKEOVER_CACHE.put(k, vol);
+        if (npuUs > 0L) NPU_US_BY_KEY.put(k, npuUs);
     }
 
     /**
@@ -336,11 +364,17 @@ public final class NpuTerrainAssist {
      * built for an assist prefetch is usable by takeover and vice versa.
      */
     public static float[] peekTakeover(int cx, int cz, int minY) {
-        float[] parked = TAKEOVER_CACHE.get(key(cx, cz, minY));
-        if (parked != null) return parked;
-        Prepared p = CACHE.get(key(cx, cz, minY));
+        long k = key(cx, cz, minY);
+        float[] parked = TAKEOVER_CACHE.get(k);
+        if (parked != null) {
+            Long us = NPU_US_BY_KEY.get(k);
+            lastPreparedNpuUs = (us == null) ? 0L : us;
+            return parked;
+        }
+        Prepared p = CACHE.get(k);
         if (p == null) return null;
         if (p.density.length != DEF_SX * DEF_SY * DEF_SZ) return null;
+        lastPreparedNpuUs = p.npuUs;
         return p.density;
     }
 
@@ -379,6 +413,7 @@ public final class NpuTerrainAssist {
         Prepared p = CACHE.get(k);
         if (p != null && p.sx == sx && p.sy == sy && p.sz == sz) {
             HITS.incrementAndGet();
+            lastPreparedNpuUs = p.npuUs;
             return p.density;
         }
         MISSES.incrementAndGet();
