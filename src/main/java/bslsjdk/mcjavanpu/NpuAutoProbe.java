@@ -55,6 +55,10 @@ public final class NpuAutoProbe {
     public static String lastReport() { return lastReport; }
 
     private static void run() {
+        // Everything below is measurement, never gameplay. Marking the thread means its
+        // submissions use tryLock and step aside instead of parking the production worker
+        // behind a bench shape that takes hundreds of milliseconds to fail.
+        NpuServiceClient.setDiagnostic(true);
         try {
             Thread.sleep(SETTLE_MS);
         } catch (InterruptedException ie) {
@@ -65,19 +69,14 @@ public final class NpuAutoProbe {
 
         StringBuilder sb = new StringBuilder("==== NPU auto probe ====");
 
-        // 0. In-process route. Gated, not removed: the code is correct and it is the
-        //    low-latency path if it ever works, but on any launcher without a
-        //    uses-native-library declaration it fails with rc=14001 (DSP unreachable from
-        //    this process) after burning ~3 s of startup. Opt-in only.
-        if (NpuConfig.get().inProcessProbe) {
-            try {
-                sb.append("\ninprocess: ").append(NpuInProcessProbe.run());
-            } catch (Throwable t) {
-                sb.append("\ninprocess probe threw: ").append(t);
-            }
-        } else {
-            sb.append("\ninprocess: skipped (inProcessProbe=false; rc=14001 without a "
-                    + "launcher native-library declaration)");
+        // 0. In-process route, before anything about the service. It is a different
+        //    question - can this process reach the NPU directly? - and it deserves to be
+        //    answered first because if it works, the ~12 ms cross-process path below is
+        //    no longer the ceiling we are measuring against.
+        try {
+            sb.append("\ninprocess: ").append(NpuInProcessProbe.run());
+        } catch (Throwable t) {
+            sb.append("\ninprocess probe threw: ").append(t);
         }
 
         // 1. Service reachability, and the reason when it is not.
@@ -93,12 +92,6 @@ public final class NpuAutoProbe {
             return;
         }
 
-        // Everything from here to the re-warm is calibration: synthetic shapes the game
-        // never submits, graph builds, and a CPU reference on the calling thread. None of
-        // it describes production cost, so none of it may feed the guard - and the re-warm
-        // at the end must not be refused, or the flush below leaves production cold.
-        NpuGuard.setCalibrating(true);
-
         // 2. Shape analysis. This is the one that catches a shape that is
         //    silently wasting most of its work on padding.
         try {
@@ -113,35 +106,6 @@ public final class NpuAutoProbe {
             sb.append("\n\n").append(NpuBench.sweep());
         } catch (Throwable t) {
             sb.append("\nbench sweep failed: ").append(t);
-        }
-
-        // The sweep just built one graph per candidate shape. Hand production a
-        // clean cache instead of leaving our diagnostics to evict its graphs.
-        try {
-            sb.append("\nflush: ").append(NpuRuntime.flushGraphs());
-        } catch (Throwable t) {
-            sb.append("\nflush failed: ").append(t);
-        }
-
-        // The flush above is unconditional, so it also dropped the graph boot's
-        // warmup had just built for the light path. Measured in the field:
-        // warmup built 128x512x512 at 11:40:20, the sweep flushed it at
-        // 11:40:25, and the next real lightapply paid a cold rebuild -
-        // 399674us, eight ticks of stall, for a result that changed nothing.
-        // Rebuild here so production starts hot instead of paying for our own
-        // diagnostics. Verification stays off: this is a graph build, not a
-        // measurement, and the host reference is pure cost on the calling thread.
-        try {
-            if (NpuConfig.get().enabled && NpuConfig.get().autoWarmup) {
-                long t0 = System.nanoTime();
-                NpuLightAccel.Result rw = NpuLightAccel.propagate(NpuConfig.get().lightBatch);
-                long ms = (System.nanoTime() - t0) / 1000000L;
-                sb.append("\nrewarm: ").append(rw.summary()).append(" wall_ms=").append(ms);
-            }
-        } catch (Throwable t) {
-            sb.append("\nrewarm failed: ").append(t);
-        } finally {
-            NpuGuard.setCalibrating(false);
         }
 
         finish(sb);
