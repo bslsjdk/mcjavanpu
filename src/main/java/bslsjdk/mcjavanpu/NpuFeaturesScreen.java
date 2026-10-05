@@ -42,6 +42,37 @@ public final class NpuFeaturesScreen extends Screen {
         y += 8;
         NpuConfig cfg = NpuConfig.get();
 
+        // The three-way mode is the decision that actually matters, so it sits above the
+        // boolean switches. Each press cycles vanilla -> npu -> assist and re-freezes the
+        // world that is open right now, because a seed used to be locked on first sight and
+        // never looked at the menu again - a world that picked npu during one degraded boot
+        // stayed there for the rest of its life.
+        addRenderableWidget(Button.builder(
+                Component.literal("地形生成: " + NpuConfig.modeLabel(cfg.chunkMode)),
+                b -> {
+                    NpuConfig.get().toggle("chunkMode");
+                    String m = NpuConfig.get().chunkMode;
+                    NpuTerrainLock.applyOverride(m);
+                    this.rebuildWidgets();
+                    this.status = "地形生成 -> " + NpuConfig.modeLabel(m) + "（对当前世界立即生效）";
+                    NpuLog.log("menu: chunkMode -> " + m);
+                })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
+        addRenderableWidget(Button.builder(
+                Component.literal("光照计算: " + NpuConfig.modeLabel(cfg.lightMode)),
+                b -> {
+                    NpuConfig.get().toggle("lightMode");
+                    String m = NpuConfig.get().lightMode;
+                    NpuTerrainLock.applyOverride(m);
+                    this.rebuildWidgets();
+                    this.status = "光照计算 -> " + NpuConfig.modeLabel(m) + "（对当前世界立即生效）";
+                    NpuLog.log("menu: lightMode -> " + m);
+                })
+                .bounds(cx - 160, y, 230, 20).build());
+        y += 24;
+
         // Global switches. These decide whether the mod runs at all and whether it
         // is allowed to back off on its own, so they belong next to the features
         // rather than buried in a config file.
