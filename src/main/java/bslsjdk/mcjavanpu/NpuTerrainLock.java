@@ -90,11 +90,20 @@ public final class NpuTerrainLock {
         long n = FAILURES.incrementAndGet();
         lastFailure = why;
         // A silent miss is the one thing this mode must never be: it would look exactly like a
-        // successful takeover. Log the first one in full and then every 50th, so a persistent
-        // failure is visible without drowning the log.
-        if (n == 1 || n % 50 == 0) {
+        // successful takeover. The first one is logged in full; after that it is rate limited by
+        // time rather than by count.
+        //
+        // "Every 50th" was the old rule, and at 180000 chunks it still emitted 3600 lines. The
+        // point of the line is to say the pipeline is failing, and one line a second says that
+        // just as well while leaving room for the rest of the log. The suppressed count rides
+        // along so the magnitude is not lost with the individual lines.
+        if (n == 1) {
             NpuLog.error("TAKEOVER MISS #" + n + " at chunk: " + why
                     + " - wrote the missing-volume sentinel, NOT vanilla terrain", null);
+        } else {
+            NpuLog.throttledError("takeover-miss", NpuLog.DEFAULT_THROTTLE_MS,
+                    "TAKEOVER MISS #" + n + " at chunk: " + why
+                    + " - wrote the missing-volume sentinel, NOT vanilla terrain");
         }
     }
 
@@ -112,9 +121,12 @@ public final class NpuTerrainLock {
     public static void recordVanillaFallback(String why) {
         long n = VANILLA_FALLBACKS.incrementAndGet();
         lastFailure = "vanilla: " + why;
-        if (n == 1 || n % 50 == 0) {
-            NpuLog.warn("TAKEOVER FALLBACK #" + n + ": " + why
-                    + " - NPU already known unusable, vanilla generated this chunk");
+        String msg = "TAKEOVER FALLBACK #" + n + ": " + why
+                + " - NPU already known unusable, vanilla generated this chunk";
+        if (n == 1) {
+            NpuLog.warn(msg);
+        } else {
+            NpuLog.throttledWarn("takeover-fallback", NpuLog.DEFAULT_THROTTLE_MS, msg);
         }
     }
 
