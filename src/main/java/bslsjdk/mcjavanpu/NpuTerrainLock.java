@@ -75,6 +75,22 @@ public final class NpuTerrainLock {
         return m;
     }
 
+    /**
+     * Re-freeze the world that is open right now and persist it under its seed.
+     *
+     * The old behaviour latched a seed on first sight and never consulted the menu again,
+     * so the mode picked during one bad boot (say, npu while the guard was degraded) became
+     * permanent for that world. Callers must be able to change their mind without deleting
+     * the save.
+     */
+    public static void applyOverride(String mode) {
+        if (mode == null) return;
+        lockedMode = mode;
+        long s = lockedSeed;
+        if (s != NpuChunkWork.SEED_UNKNOWN) NpuConfig.get().worldLocks.put(s, mode);
+        NpuLog.log("world lock override: seed=" + s + " mode=" + mode);
+    }
+
     /** Mode frozen for the world currently being generated, or null before the first sample. */
     public static String current() { return lockedMode; }
 
