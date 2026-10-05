@@ -155,6 +155,7 @@ public final class NpuBench {
             {1024, 8, 8},
             {4096, 4, 1},
             {16384, 4, 1},
+            {128, 512, 512},
         };
         for (int[] s : shapes) {
             Result r = run(s[0], s[1], s[2], 1, 5);
