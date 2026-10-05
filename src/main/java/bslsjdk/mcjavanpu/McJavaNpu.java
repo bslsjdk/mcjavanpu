@@ -60,6 +60,13 @@ public final class McJavaNpu implements ModInitializer {
 
             // Warmup exists to measure, so this is where the host reference is worth
             // paying for. Everywhere else it is pure overhead on the calling thread.
+            // Warm-up is calibration, not production. It builds graphs and runs a host
+            // reference on the calling thread, both of which production never pays. On
+            // 2026-10-05 its samples put a median of 8624us into the guard window against
+            // an 8000us budget, the guard degraded during boot, and the NPU then went
+            // unused for the entire session. Marking the stretch keeps those timings out
+            // of the health window and guarantees the calls are not refused.
+            NpuGuard.setCalibrating(true);
             NpuLightAccel.setVerify(true);
             long t0 = System.nanoTime();
             NpuLightAccel.Result r = NpuLightAccel.propagate(cfg.lightBatch);
@@ -71,6 +78,7 @@ public final class McJavaNpu implements ModInitializer {
             long ms2 = (System.nanoTime() - t1) / 1000000L;
             NpuLog.log("warmup steady: " + r2.summary() + " wall_ms=" + ms2);
             NpuLightAccel.setVerify(false);
+            NpuGuard.setCalibrating(false);
             NpuLog.log("boot: done, graphs are hot");
         } catch (Throwable t) {
             NpuLog.error("boot failed", t);
