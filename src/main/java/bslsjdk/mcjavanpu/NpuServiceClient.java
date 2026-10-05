@@ -231,8 +231,10 @@ public final class NpuServiceClient {
      * A large gap between wait and svc means the time is not being spent computing.
      */
     public static String ioSummary() {
-        long n = Math.max(1, CALLS.get());
-        return "ipc_calls=" + CALLS.get()
+        // One denominator for every field. Splitting them (successes for the breakdown,
+        // all calls for the lock) made the two halves of this line incomparable.
+        long n = Math.max(1, ATTEMPTS.get());
+        return "ipc_calls=" + ATTEMPTS.get() + " ok=" + CALLS.get() + " failed=" + FAILURES.get()
                 + " queue_wait_avg_us=" + (LOCK_WAIT_US.get() / n)
                 + " ipc_send_avg_us=" + (SEND_US.get() / n)
                 + " service_wait_avg_us=" + (WAIT_US.get() / n)
@@ -244,10 +246,30 @@ public final class NpuServiceClient {
                 + " npu_service_last_us=" + LAST_SERVICE_US;
     }
 
+    /**
+     * Every submit that acquired the lock, success or failure.
+     *
+     * These counters previously had different denominators: IN_LOCK_N counted every call,
+     * CALLS only the successful ones. So in_lock avg_us and ipc_send_avg_us were averages
+     * over different populations and could not be compared - which is how a 300 ms failed
+     * bench call ended up being read as "the service is slow" rather than "a fault took
+     * 300 ms to be reported".
+     */
+    private static final java.util.concurrent.atomic.AtomicLong ATTEMPTS =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong FAILURES =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong DIAG_SKIPPED =
+            new java.util.concurrent.atomic.AtomicLong();
+    private static final java.util.concurrent.atomic.AtomicLong FAIL_US =
+            new java.util.concurrent.atomic.AtomicLong();
+
     public static String lockSummary() {
-        long n = IN_LOCK_N.get();
+        long n = ATTEMPTS.get();
         long avg = n == 0 ? 0 : IN_LOCK_US.get() / n;
-        return "in_lock avg_us=" + avg + " max_us=" + IN_LOCK_MAX_US.get() + " n=" + n;
+        return "in_lock avg_us=" + avg + " max_us=" + IN_LOCK_MAX_US.get()
+                + " n=" + n + " failed=" + FAILURES.get() + " fail_us=" + FAIL_US.get()
+                + " diag_skipped=" + DIAG_SKIPPED.get();
     }
 
     /**
@@ -265,19 +287,55 @@ public final class NpuServiceClient {
     private static final java.util.concurrent.atomic.AtomicLong LOCK_WAIT_MAX_US =
             new java.util.concurrent.atomic.AtomicLong();
 
+    /**
+     * Marks the calling thread as diagnostic (auto probe, bench) rather than production.
+     *
+     * The probe runs on its own thread and shares SUBMIT_LOCK with the production worker.
+     * A bench shape that faults takes ~300 ms to report, and for that whole time the game
+     * thread is parked behind the lock - measured as lock_wait max_us=296744 against a
+     * production round trip of ~8 ms. That is a diagnostic stalling the game, so a
+     * diagnostic caller waits only briefly and then gives up instead of queueing.
+     */
+    private static final ThreadLocal<Boolean> DIAGNOSTIC = ThreadLocal.withInitial(() -> Boolean.FALSE);
+    private static final long DIAG_LOCK_WAIT_MS = 5L;
+
+    /** How long the last in-lock section took, so a caller can bail out of a slow sweep. */
+    private static volatile long LAST_IN_LOCK_US;
+
+    public static long lastInLockUs() { return LAST_IN_LOCK_US; }
+
+    public static void setDiagnostic(boolean on) { DIAGNOSTIC.set(on); }
+
     public static void recordPrepareUs(long us) { PREPARE_US.addAndGet(Math.max(0L, us)); }
     public static void recordAssembleUs(long us) { ASSEMBLE_US.addAndGet(Math.max(0L, us)); }
 
     public static String contentionSummary() {
-        long n = Math.max(1, IN_LOCK_N.get());
+        long n = Math.max(1, ATTEMPTS.get());
         return "lock_wait_avg_us=" + (LOCK_WAIT_US.get() / n)
-                + " lock_wait_max_us=" + LOCK_WAIT_MAX_US.get();
+                + " lock_wait_max_us=" + LOCK_WAIT_MAX_US.get()
+                + " n=" + ATTEMPTS.get();
     }
 
     public static MatMulResult submitBinMatMul8(byte[] A, byte[] B, int m, int k, int n) {
         final long total0 = System.nanoTime();
         long tWait0 = total0;
-        SUBMIT_LOCK.lock();
+        boolean diag = DIAGNOSTIC.get();
+        boolean got;
+        if (diag) {
+            try {
+                got = SUBMIT_LOCK.tryLock(DIAG_LOCK_WAIT_MS, java.util.concurrent.TimeUnit.MILLISECONDS);
+            } catch (InterruptedException e) {
+                Thread.currentThread().interrupt();
+                return new MatMulResult(0, null, 0, "DIAG_INTERRUPTED");
+            }
+            if (!got) {
+                DIAG_SKIPPED.incrementAndGet();
+                return new MatMulResult(0, null, 0, "DIAG_SKIPPED_CONTENTION");
+            }
+        } else {
+            SUBMIT_LOCK.lock();
+            got = true;
+        }
         long waitUs = (System.nanoTime() - tWait0) / 1000;
         LOCK_WAIT_US.addAndGet(waitUs);
         if (waitUs > LOCK_WAIT_MAX_US.get()) LOCK_WAIT_MAX_US.set(waitUs);
@@ -296,6 +354,10 @@ public final class NpuServiceClient {
         } else {
             NpuDiagnostics.count("transport.ok");
         }
+        if (r == null || r.error() != null) {
+            FAILURES.incrementAndGet();
+            FAIL_US.addAndGet((System.nanoTime() - t) / 1000);
+        }
             // Counted here, at the transport, not in the scheduler. A counter in the
             // scheduler would only prove that chunks were put in a list; this proves
             // a request actually left for the NPU.
@@ -305,6 +367,8 @@ public final class NpuServiceClient {
             long us = (System.nanoTime() - t) / 1000;
             IN_LOCK_US.addAndGet(us);
             IN_LOCK_N.incrementAndGet();
+            ATTEMPTS.incrementAndGet();
+            LAST_IN_LOCK_US = us;
             if (us > IN_LOCK_MAX_US.get()) IN_LOCK_MAX_US.set(us);
             SUBMIT_LOCK.unlock();
         }
