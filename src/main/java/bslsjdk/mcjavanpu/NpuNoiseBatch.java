@@ -431,8 +431,8 @@ public final class NpuNoiseBatch {
             byte[] body = encodeRequestPoints(ch, px, py, pz, points);
             NpuServiceClient.NoiseResult r =
                     NpuServiceClient.noiseBatch(body, 0, noises.length, points);
-            if (r == null || r.body == null) return null;
-            Result res = decode(r.body, noises.length, points, true, r.us);
+            if (r == null || r.body() == null) return null;
+            Result res = decode(r.body(), noises.length, points, true, r.us());
             if (!res.ok()) { recordReject("decode: " + res.error); return null; }
             return res.values;
         } catch (Throwable t) {
