@@ -426,16 +426,29 @@ public final class NpuNoiseBatch {
                                            double[] xzScale, double[] yScale,
                                            float[] px, float[] py, float[] pz, int points) {
         if (!available() || noises == null || noises.length == 0 || points <= 0) return null;
+        // Route through the same guard as every other offload. Without this the noise
+        // path was the only one that could never be turned down: the service kernel is
+        // plain C++ today, so once it answers, every chunk pays an IPC round trip to
+        // have the CPU do work the game would have done inline. The guard is what keeps
+        // "wired" from becoming "slower than vanilla".
+        if (!NpuGuard.allow()) return null;
         try {
             Channel[] ch = fromNoises(noises, xzScale, yScale);
             byte[] body = encodeRequestPoints(ch, px, py, pz, points);
             NpuServiceClient.NoiseResult r =
                     NpuServiceClient.noiseBatch(body, 0, noises.length, points);
             if (r == null || r.body() == null) return null;
+            if (r.error() != null) {
+                NpuGuard.recordFailure(r.error());
+                recordReject(r.error());
+                return null;
+            }
+            NpuGuard.recordUs(r.us());
             Result res = decode(r.body(), noises.length, points, true, r.us());
             if (!res.ok()) { recordReject("decode: " + res.error); return null; }
             return res.values;
         } catch (Throwable t) {
+            NpuGuard.recordFailure(t.getClass().getSimpleName());
             recordReject(t.getClass().getSimpleName());
             return null;
         }
