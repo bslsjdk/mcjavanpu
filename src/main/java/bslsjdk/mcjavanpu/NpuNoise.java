@@ -69,8 +69,11 @@ public final class NpuNoise {
      * same order Minecraft draws them.
      */
     public static final class PerlinNoise {
-        private final int[] p = new int[512];
-        private final double xo, yo, zo;
+        // Public because the NOISE_BATCH wire format ships exactly these: 256 permutation
+        // bytes plus the three offsets per octave. Exposing the fields is cheaper and less
+        // error-prone than a parallel accessor that could drift from them.
+        public final int[] p = new int[512];
+        public final double xo, yo, zo;
 
         public PerlinNoise(Rng rng) {
             // GradientNoise ctor order, read off the bytecode: three offsets first, then the
@@ -143,6 +146,12 @@ public final class NpuNoise {
         public final int firstOctave;
         public final double[] amplitudes;
         private final PerlinNoise[] levels;
+
+        /** The octaves, in wire order. Null where the amplitude is zero. */
+        public PerlinNoise[] levels() { return levels; }
+
+        /** Channel normalisation - the divisor the reference applies after summing. */
+        public double normalization() { return normalization; }
 
         public NormalNoise(long seed, int baseOctave, double baseAmplitude, double[] modifiers) {
             this.firstOctave = baseOctave;
