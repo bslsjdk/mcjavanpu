@@ -434,6 +434,55 @@ public final class NpuServiceClient {
         return new MatMulResult(0, null, 0, "SERVICE_UNAVAILABLE " + lastError);
     }
 
+    public record NoiseResult(byte[] body, long us, String error) {}
+
+    /**
+     * One batched noise evaluation. Returns a result carrying either the encoded body or
+     * an error string - never null - so the caller can distinguish "service refused"
+     * from "service returned nothing" and fall back to the CPU reference in both cases.
+     */
+    public static synchronized NoiseResult noiseBatch(byte[] body, int chunks,
+                                                      int channels, int points) {
+        if (body == null || channels <= 0 || points <= 0) return new NoiseResult(null, 0, "BAD_ARGS");
+        if (body.length > MAX_PAYLOAD_BYTES) return new NoiseResult(null, 0, "TOO_LARGE");
+        if (cooling()) return new NoiseResult(null, 0, "SERVICE_COOLDOWN " + lastFailure);
+        String lastError = "unknown";
+        for (int attempt = 0; attempt < 2; attempt++) {
+            try {
+                if (socket == null || socket.isClosed() || !socket.isConnected()) connect();
+                out.write(("SUBMITBIN_NOISEBATCH chunks=" + chunks + " channels=" + channels
+                        + " points=" + points + " bytes=" + body.length + "\n")
+                        .getBytes(StandardCharsets.UTF_8));
+                out.write(body);
+                out.flush();
+                String line = readLineUtf8(in);
+                if (line == null) throw new java.io.EOFException("service closed connection");
+                if (!line.startsWith("OK NOISEBATCH")) return new NoiseResult(null, 0, line);
+                int cbytes = Integer.parseInt(field(line, "cbytes"));
+                long us = Long.parseLong(field(line, "us"));
+                byte[] c = new byte[cbytes];
+                readFully(in, c, cbytes);
+                SERVICE_US.addAndGet(us);
+                LAST_SERVICE_US = us;
+                CALLS.incrementAndGet();
+                clearCooldown();
+                healthy = true;
+                return new NoiseResult(c, us, null);
+            } catch (Throwable t) {
+                close();
+                String msg = t.getMessage();
+                healthy = false;
+                lastError = t.getClass().getSimpleName() + (msg == null ? "" : "(" + msg + ")");
+                if (t instanceof java.net.SocketTimeoutException) {
+                    enterCooldown(lastError);
+                    return new NoiseResult(null, 0, "SERVICE_BUSY " + lastError);
+                }
+            }
+        }
+        enterCooldown(lastError);
+        return new NoiseResult(null, 0, "SERVICE_UNAVAILABLE " + lastError);
+    }
+
     public static synchronized void closeAll() { close(); }
 
     /**
