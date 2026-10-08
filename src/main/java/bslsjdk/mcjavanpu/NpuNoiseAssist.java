@@ -144,6 +144,11 @@ public final class NpuNoiseAssist {
                     int k = ni[c];
                     sub[c] = (k >= 0 && k < noises.length) ? noises[k] : null;
                 }
+                // The kernel is a CPU evaluator today, so this is not a speed win yet -
+                // but going through the service exercises the protocol, the batching and
+                // the parity path end to end. Any failure falls back rather than failing.
+                float[][] via = NpuNoiseBatch.evalViaService(sub, dx, dy, ax, ay, az, points);
+                if (via != null) return via;
                 return NpuNoiseBatch.evalOnCpu(sub, dx, dy, ax, ay, az, points);
             }
         }, e);
