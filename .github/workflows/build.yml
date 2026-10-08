@@ -28,8 +28,25 @@ jobs:
         with:
           gradle-version: "9.6.0"
 
+      # pipefail matters: without it a failing gradle piped into tee still exits 0 and
+      # the build reports success on a compile error.
       - name: Build Fabric mod
-        run: gradle build --no-daemon
+        run: |
+          set -o pipefail
+          gradle build --no-daemon 2>&1 | tee build.log
+
+      # The runner's log zip is not retrievable from the API here (403), and Actions
+      # artifact storage is exhausted on this account. Release assets are not metered,
+      # so this is the only route that actually gets the compiler output out.
+      - name: Publish build log on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release delete latest-log --yes --cleanup-tag || true
+          gh release create latest-log build.log --prerelease \
+            --title "build log ${GITHUB_SHA}" \
+            --notes "Compiler output for ${GITHUB_SHA}."
 
       # Actions artifact upload still fails while the account's metered storage is
       # exhausted (it resets around 2026-11-01 and deleting artifacts does not lower
