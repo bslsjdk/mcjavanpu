@@ -330,4 +330,115 @@ public final class NpuNoiseBatch {
         BATCHES.set(0); POINTS.set(0); CHUNKS.set(0); REJECTED.set(0);
         lastReject = "none";
     }
+
+
+    /** bit2: the body carries explicit xyz coordinates instead of chunk/lattice descriptors. */
+    public static final int FLAG_POINTS = 4;
+
+    /**
+     * Builds a request that ships the coordinates.
+     *
+     * Protocol v2 describes chunks and lets the kernel derive the lattice, but that makes
+     * the point ORDER part of the wire contract - and an order mismatch does not crash, it
+     * permutes which value belongs to which cell, which is the wrong-noise failure this
+     * class exists to prevent. The caller already holds explicit px/py/pz planes, so
+     * shipping them costs nothing and removes the whole class.
+     */
+    public static byte[] encodeRequestPoints(Channel[] channels,
+                                             float[] px, float[] py, float[] pz, int points) {
+        int chanBytes = 0;
+        for (Channel c : channels) {
+            chanBytes += CHANNEL_HEADER_BYTES + c.amplitudes.length * 4
+                    + c.activeOctaves() * TABLE_BYTES;
+        }
+        int total = 8 + 8 + 6 + chanBytes + points * 12;
+        java.nio.ByteBuffer b = java.nio.ByteBuffer.allocate(total)
+                .order(java.nio.ByteOrder.LITTLE_ENDIAN);
+        b.putShort((short) MAGIC_REQ);
+        b.putShort((short) VERSION);
+        b.putShort((short) (FLAG_INT8 | FLAG_TABLES | FLAG_POINTS));
+        b.putShort((short) channels.length);
+        b.putShort((short) 0);                 // chunkCount unused in this form
+        b.put((byte) 8); b.put((byte) 16);     // cell sizes unused, kept for field parity
+        b.putShort((short) 0);
+        b.putShort((short) 0);
+        b.putShort((short) 0);
+        b.putLong(0L);
+        for (Channel c : channels) {
+            b.put((byte) c.firstOctave);
+            b.put((byte) c.amplitudes.length);
+            b.putFloat(c.normalization);
+            b.putFloat(c.xzScale);
+            b.putFloat(c.yScale);
+            for (float a : c.amplitudes) b.putFloat(a);
+            int oi = 0;
+            for (int o = 0; o < c.amplitudes.length; o++) {
+                if (c.amplitudes[o] == 0f) continue;
+                double[] off = c.offsets[oi];
+                b.putDouble(off[0]);
+                b.putDouble(off[1]);
+                b.putDouble(off[2]);
+                b.put(c.perms[oi]);
+                oi++;
+            }
+        }
+        for (int p = 0; p < points; p++) b.putFloat(px[p]);
+        for (int p = 0; p < points; p++) b.putFloat(py[p]);
+        for (int p = 0; p < points; p++) b.putFloat(pz[p]);
+        return b.array();
+    }
+
+    /** Packs live NormalNoise instances into the wire form. */
+    public static Channel[] fromNoises(NpuNoise.NormalNoise[] noises,
+                                       double[] xzScale, double[] yScale) {
+        Channel[] out = new Channel[noises.length];
+        for (int c = 0; c < noises.length; c++) {
+            NpuNoise.NormalNoise n = noises[c];
+            if (n == null) { out[c] = null; continue; }
+            int k = n.amplitudes.length;
+            float[] amp = new float[k];
+            double[][] off = new double[k][];
+            byte[][] perm = new byte[k][];
+            int cnt = 0;
+            for (int o = 0; o < k; o++) {
+                amp[o] = (float) n.amplitudes[o];
+                if (n.amplitudes[o] == 0.0) continue;
+                NpuNoise.PerlinNoise pn = n.levels()[o];
+                if (pn == null) continue;
+                off[cnt] = new double[] { pn.xo, pn.yo, pn.zo };
+                byte[] pb = new byte[256];
+                for (int i = 0; i < 256; i++) pb[i] = (byte) pn.p[i];
+                perm[cnt] = pb;
+                cnt++;
+            }
+            out[c] = new Channel(n.firstOctave, amp, (float) n.normalization(),
+                    (float) xzScale[c], (float) yScale[c],
+                    java.util.Arrays.copyOf(off, cnt), java.util.Arrays.copyOf(perm, cnt));
+        }
+        return out;
+    }
+
+    /**
+     * Evaluates through the service. Returns null on any failure so the caller falls back
+     * to the CPU reference - a failed kernel must never become wrong terrain.
+     */
+    public static float[][] evalViaService(NpuNoise.NormalNoise[] noises,
+                                           double[] xzScale, double[] yScale,
+                                           float[] px, float[] py, float[] pz, int points) {
+        if (!available() || noises == null || noises.length == 0 || points <= 0) return null;
+        try {
+            Channel[] ch = fromNoises(noises, xzScale, yScale);
+            byte[] body = encodeRequestPoints(ch, px, py, pz, points);
+            NpuServiceClient.NoiseResult r =
+                    NpuServiceClient.noiseBatch(body, 0, noises.length, points);
+            if (r == null || r.body == null) return null;
+            Result res = decode(r.body, noises.length, points, true, r.us);
+            if (!res.ok()) { recordReject("decode: " + res.error); return null; }
+            return res.values;
+        } catch (Throwable t) {
+            recordReject(t.getClass().getSimpleName());
+            return null;
+        }
+    }
+
 }
